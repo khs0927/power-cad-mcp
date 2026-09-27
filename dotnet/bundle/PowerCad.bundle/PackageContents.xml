@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoCAD autoloader manifest. Copy PowerCad.bundle to %APPDATA%\Autodesk\ApplicationPlugins. -->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AutodeskProduct="AutoCAD"
+    ProductType="Application"
+    Name="PowerCad"
+    AppVersion="0.2.0"
+    Description="Power CAD MCP bridge: lets AI assistants read, edit and verify the open AutoCAD 2027 drawing."
+    Author="khs0927"
+    ProductCode="{5B0A7E54-3C1F-4D8B-9E2A-6F1C2D3E4A51}"
+    UpgradeCode="{9C4D2B17-8E6A-4F35-B1D0-2A7E5C9F3B82}"
+    HelpFile="https://github.com/khs0927/power-cad-mcp">
+  <CompanyDetails Name="khs0927" Url="https://github.com/khs0927/power-cad-mcp" />
+  <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R26.0" SeriesMax="R26.9" />
+  <Components Description="Power CAD in-process plugin (.NET 10)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R26.0" SeriesMax="R26.9" />
+    <ComponentEntry
+        AppName="PowerCad"
+        Version="0.2.0"
+        ModuleName="./Contents/PowerCad.Plugin.A27.dll"
+        AppDescription="Named-pipe bridge for the power-cad-server MCP server"
+        LoadOnAutoCADStartup="True" />
+  </Components>
+</ApplicationPackage>

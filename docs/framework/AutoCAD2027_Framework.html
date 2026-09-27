@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Power CAD 작업 흐름</title>
+<style>
+  :root { --bg:#f7f7f5; --panel:#ffffff; --ink:#1d1d1b; --muted:#6b6b66; --line:#dcdcd6; --accent:#1f6feb; --ok:#1a7f37; --warn:#b54708; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39c; --line:#35352f; --accent:#6ea8ff; --ok:#56d364; --warn:#f0a35e; } }
+  :root[data-theme="dark"] { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#a3a39c; --line:#35352f; --accent:#6ea8ff; --ok:#56d364; --warn:#f0a35e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.6 system-ui, "Malgun Gothic", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  .arch { display:grid; gap:8px; margin-bottom: 24px; }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
+  .box b { display:block; }
+  .box span { color:var(--muted); font-size:13px; }
+  .arrow { text-align:center; color:var(--muted); font-size:13px; }
+  .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom: 12px; }
+  .tabs button { border:1px solid var(--line); background:var(--panel); color:var(--ink); padding:8px 14px; border-radius:999px; cursor:pointer; font:inherit; }
+  .tabs button[aria-selected="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  ol.flow { list-style:none; padding:0; margin:0; counter-reset: s; }
+  ol.flow li { counter-increment:s; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px 10px 48px; margin-bottom:8px; position:relative; }
+  ol.flow li::before { content:counter(s); position:absolute; left:14px; top:10px; width:22px; height:22px; border-radius:50%; background:var(--accent); color:var(--panel); font-size:12px; display:grid; place-items:center; font-weight:700; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: color-mix(in srgb, var(--line) 45%, transparent); padding: 1px 5px; border-radius: 4px; overflow-wrap:anywhere; }
+  .tag { font-size:12px; font-weight:600; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Power CAD — AutoCAD 2027 작업 흐름</h1>
+  <p class="lead">사례를 선택하면 AI가 도면을 수정할 때 거치는 단계를 볼 수 있습니다. 모든 수정은 수정 직전 대상 확인과 수정 직후 자동 검증을 거칩니다.</p>
+
+  <div class="arch" aria-label="구성">
+    <div class="box"><b>MCP 클라이언트</b><span>Claude Desktop / Claude Code</span></div>
+    <div class="arrow">stdio (MCP)</div>
+    <div class="box"><b>power-cad-server</b><span>C# · .NET 10 · 도구 10개 · --simulate / --read-only</span></div>
+    <div class="arrow">Named Pipe · NDJSON · 토큰 인증 · 발견 파일</div>
+    <div class="box"><b>PowerCad.Plugin.A27</b><span>AutoCAD 2027 내부 · 메인 스레드 · DocumentLock + Transaction · 검증 후 커밋/롤백</span></div>
+    <div class="arrow">별도 연결(분석)</div>
+    <div class="box"><b>best-cad-mcp</b><span>도면 의미·객체 관계 분석 (COM)</span></div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-case="text">문자 변경</button>
+    <button role="tab" aria-selected="false" data-case="move">객체 이동</button>
+    <button role="tab" aria-selected="false" data-case="door">문·개구부 수정</button>
+  </div>
+  <ol class="flow" id="flow" aria-live="polite"></ol>
+</main>
+<script>
+const cases = {
+  text: [
+    ["대상 찾기", "<code>cad_query</code> text_contains=\"침실 1\", layers=[\"A-ANNO\"] → handle·fingerprint 기록"],
+    ["미리보기", "<code>cad_replace_text</code> targets=[{handle, expect_text:\"침실 1\", expect_fingerprint}], new_text=\"안방\", dry_run=true"],
+    ["사전 확인", "현재 텍스트·지문이 분석 때와 같은지, 잠긴 레이어가 아닌지 확인 <span class='tag warn'>다르면 STALE_TARGET</span>"],
+    ["적용", "하나의 트랜잭션 안에서 TextString / Contents 변경"],
+    ["사후 검증", "저장된 텍스트 == \"안방\" <span class='tag warn'>글꼴 등으로 달라지면 VERIFY_FAILED + 롤백</span>"],
+    ["보고", "changed.text: 침실 1 → 안방 <span class='tag ok'>checks_passed 1</span>"]
+  ],
+  move: [
+    ["대상 찾기", "<code>cad_query</code> types=[\"INSERT\"], within=[[x1,y1],[x2,y2]] → handle·fingerprint"],
+    ["미리보기", "<code>cad_move</code> targets=[{handle, expect_fingerprint}], from=[0,0], to=[100,-50], dry_run=true"],
+    ["사전 확인", "대상 지문 일치, 잠금 레이어 아님"],
+    ["적용", "TransformBy(Displacement) — 속성·하위 요소 함께 이동"],
+    ["사후 검증", "기준점(삽입점·시작점·중심·첫 정점)이 정확히 변위만큼 이동했는지"],
+    ["보고", "changed.position before/after, 되돌리기는 AutoCAD UNDO 한 번"]
+  ],
+  door: [
+    ["대상 찾기", "<code>cad_query</code> block_name=\"DOOR*\" → width, dynamic, attributes, rotation 확인"],
+    ["관계 확인", "필요하면 best-cad 분석기 또는 within 조회로 어느 벽·실의 문인지 근거 확보"],
+    ["미리보기", "<code>cad_modify_opening</code> handle, expect_fingerprint, width=1000, slide=500, attributes={DOOR_NO:\"D1-A\"}, dry_run=true"],
+    ["적용", "동적 Width 매개변수 우선, 없으면 블록 정의 폭으로 X축척 계산 · 벽 방향 슬라이드 · 반전 · 속성"],
+    ["사후 검증", "유효 폭 == 1000, 위치·회전·반전 부호·속성값 일치 <span class='tag warn'>동적 블록 값 목록 스냅 시 VERIFY_FAILED</span>"],
+    ["보고", "changed.width 900 → 1000, dynamic.Width, position, attributes"]
+  ]
+};
+const flow = document.getElementById("flow");
+function show(name) {
+  flow.innerHTML = cases[name].map(([t, d]) => `<li><b>${t}</b><br>${d}</li>`).join("");
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.case === name)));
+}
+document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => show(b.dataset.case)));
+show("text");
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+{
+  "reviewed_at": "2026-09-27",
+  "policy": "Patterns are re-implemented; no third-party source files are copied into this repository. Pins record exactly which revision was reviewed.",
+  "sources": [
+    {
+      "name": "bimwright/rvt-mcp",
+      "url": "https://github.com/bimwright/rvt-mcp",
+      "commit": "170d3b42f7362ce95502b5ecb34a72f8bf0efc93",
+      "license": "Apache-2.0",
+      "role": "Primary architecture: C# MCP server + in-process add-in, named pipe NDJSON with token auth, discovery files, per-request transactions, atomic batch, 1 MiB message cap, error sanitising.",
+      "used_as": "design reference (re-implemented for AutoCAD 2027)"
+    },
+    {
+      "name": "xuanquangIT/autocad-mechanical-harness",
+      "url": "https://github.com/xuanquangIT/autocad-mechanical-harness",
+      "commit": "77b1dd0cefbbb537e546714f7f4cf19f0711e7a3",
+      "license": "Apache-2.0",
+      "role": "Execution safety: stale-state rejection before writes, atomic commit, independent readback, AutoCAD 2027 (R26, .NET 10) plug-in targeting.",
+      "used_as": "design reference (narrowed to per-target fingerprints)"
+    },
+    {
+      "name": "LokmenoWer/best-cad-mcp",
+      "url": "https://github.com/LokmenoWer/best-cad-mcp",
+      "commit": "964a236281b844d64a00e335221d15a9cffda2e1",
+      "license": "MIT",
+      "role": "Drawing semantics and object-relationship analysis over COM (semantic graph, dimension binding, constraints).",
+      "used_as": "separate MCP server connected alongside power-cad (uvx --from best-cad-mcp cad-mcp)"
+    },
+    {
+      "name": "AutoCAD.NET",
+      "url": "https://www.nuget.org/packages/AutoCAD.NET/26.0.0",
+      "version": "26.0.0",
+      "license": "Autodesk ObjectARX license (reference assemblies; not redistributed)",
+      "role": "AutoCAD 2027 managed API, targets net10.0",
+      "used_as": "compile-time reference (ExcludeAssets=runtime)"
+    },
+    {
+      "name": "ModelContextProtocol (C# SDK)",
+      "url": "https://www.nuget.org/packages/ModelContextProtocol/2.2.0",
+      "version": "2.2.0",
+      "license": "Apache-2.0",
+      "role": "MCP server hosting (stdio)",
+      "used_as": "NuGet dependency"
+    },
+    {
+      "name": "Microsoft.Extensions.Hosting",
+      "version": "10.0.0",
+      "license": "MIT",
+      "used_as": "NuGet dependency"
+    },
+    {
+      "name": "Autodesk official AutoCAD MCP",
+      "status": "not integrated",
+      "note": "To be checked on an AutoCAD 2027 installation; if available, added as a read-only secondary analysis server."
+    }
+  ]
+}
