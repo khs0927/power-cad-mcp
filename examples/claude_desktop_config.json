@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "power-cad": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/khs0927/power-cad-mcp", "power-cad-mcp"],
+      "env": {
+        "POWER_CAD_BACKEND": "autocad",
+        "POWER_CAD_WORKSPACE": "C:\\Users\\YOUR_NAME\\Documents\\PowerCAD"
+      }
+    }
+  }
+}
