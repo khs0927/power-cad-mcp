@@ -49,7 +49,7 @@ public sealed class PipeClient(DiscoveryInfo target, TimeSpan? timeout = null) :
                 throw new CadException(
                     ErrorCodes.Timeout,
                     $"AutoCAD did not answer '{command}' within {_timeout.TotalSeconds:0} s.",
-                    "AutoCAD may be busy (running command, open dialog). Check it, press Esc if needed, then re-query before retrying an edit.");
+                    "The outcome is unknown: an edit that had already started may still complete. Re-query the targets (cad_get) before retrying; never repeat an edit blindly.");
             }
             catch (Exception e) when (e is IOException or TimeoutException or UnauthorizedAccessException)
             {

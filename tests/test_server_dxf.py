@@ -124,6 +124,9 @@ async def test_draw_batch(call):
         ],
     )
     assert res["created"] == 3 and res["failed"] == 2
+    # a rejected item must not leave geometry behind (the bogus TEXT was never created)
+    assert (await call("list_entities"))["total"] == 3
+    assert (await call("list_entities", entity_type="TEXT"))["total"] == 0
     assert "Unknown op" in res["results"][2]["error"]
     assert "unexpected" in res["results"][3]["error"]
     stopped = await call(
@@ -239,6 +242,7 @@ async def test_export_and_preview(call, tmp_path):
         res = await call("export_drawing", path=f"exp/drawing.{fmt}")
         assert os.path.getsize(res["path"]) > 0, fmt
     assert (tmp_path / "exp" / "drawing.png").read_bytes()[:4] == b"\x89PNG"
+    assert "make them match" in await call.error("export_drawing", path="exp/x.pdf", format="png")
     result = await call.raw("render_preview")
     assert not result.is_error
     img = result.content[0]

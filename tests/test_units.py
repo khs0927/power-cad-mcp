@@ -77,6 +77,11 @@ def test_lisp_rules():
     assert check_command("(setq a 1)", allow_commands=True, allow_lisp=True)
     with pytest.raises(CadError, match="outside"):
         check_command('(startapp "cmd.exe")', allow_commands=True, allow_lisp=True)
+    # The standard command trampoline must not reach blocked commands (Codex review finding).
+    for trampoline in ('(command "_.SHELL" "calc")', '(command "sh")', '(eval (read "(startapp)"))'):
+        with pytest.raises(CadError):
+            check_command(trampoline, allow_commands=True, allow_lisp=True)
+    assert check_command('(command "_.LINE" "0,0" "1,1" "")', allow_commands=True, allow_lisp=True)
     with pytest.raises(CadError, match="disabled"):
         check_command("LINE", allow_commands=False, allow_lisp=True)
     with pytest.raises(CadError, match="empty"):

@@ -38,7 +38,8 @@ BLOCKED_COMMANDS = {
 }
 LISP_DANGER = re.compile(
     r"\b(startapp|command-s|vl-cmdf|vlax-create-object|vlax-get-or-create-object|vl-file-delete|"
-    r"vl-file-rename|vl-registry-write|open|load|arxload|dos_[a-z]+|setenv)\b",
+    r"vl-file-rename|vl-registry-write|vl-registry-delete|open|load|arxload|dos_[a-z]+|setenv|"
+    r"eval|read|vla-sendcommand|vla-postcommand|vlax-invoke|vlax-invoke-method|acet-sys-[a-z-]+)\b",
     re.IGNORECASE,
 )
 
@@ -60,7 +61,8 @@ def check_command(command: str, *, allow_commands: bool, allow_lisp: bool) -> st
     if stripped.startswith("!"):
         raise CadError("'!' LISP variable evaluation is not allowed.")
     # Every token that starts a command (first token, and tokens after an empty-enter) is checked.
-    for token in re.split(r"[\s\n]+", stripped):
+    # Tokens inside quotes and parentheses are checked too, so (command "_.SHELL") is caught.
+    for token in re.split(r"[\s\"()']+", stripped):
         name = token.lstrip("_.-'").upper()
         if name in BLOCKED_COMMANDS:
             raise CadError(f"The command {name} is blocked because it can act outside the drawing.")

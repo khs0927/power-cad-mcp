@@ -7,10 +7,13 @@ namespace PowerCad.Plugin;
 /// Runs work on AutoCAD's main (UI) thread. The AutoCAD API is not thread-safe, while pipe requests
 /// arrive on background threads; a hidden control created on the main thread during Initialize() gives
 /// a reliable BeginInvoke target (the same role ExternalEvent plays in the Revit add-in of bimwright).
-/// Work that is still queued when the caller times out is skipped, never executed late.
 /// </summary>
 internal sealed class MainThreadInvoker : IDisposable
 {
+    private const int Queued = 0;
+    private const int Started = 1;
+    private const int Abandoned = 2;
+
     private readonly Control _control;
 
     public MainThreadInvoker()
@@ -20,6 +23,12 @@ internal sealed class MainThreadInvoker : IDisposable
         _ = _control.Handle; // force the window handle on the main thread
     }
 
+    /// <summary>
+    /// Queues <paramref name="work"/> and waits up to <paramref name="timeout"/> for it to START.
+    /// Work that has not started by then is cancelled and never runs. Work that has started is always
+    /// awaited to completion, so an edit can never commit after the caller was told it failed.
+    /// Exceptions from <paramref name="work"/> are rethrown unwrapped (CadException codes survive).
+    /// </summary>
     public T Invoke<T>(Func<T> work, TimeSpan timeout)
     {
         if (!_control.InvokeRequired)
@@ -28,12 +37,12 @@ internal sealed class MainThreadInvoker : IDisposable
         }
 
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var abandoned = 0;
+        var state = Queued;
         _control.BeginInvoke(() =>
         {
-            if (Interlocked.CompareExchange(ref abandoned, 0, 0) == 1)
+            if (Interlocked.CompareExchange(ref state, Started, Queued) != Queued)
             {
-                return; // the caller gave up; do not apply a stale edit
+                return; // the caller gave up before we started; do not apply a stale edit
             }
 
             try
@@ -46,18 +55,18 @@ internal sealed class MainThreadInvoker : IDisposable
             }
         });
 
-        if (!tcs.Task.Wait(timeout))
+        // IAsyncResult.WaitOne does not observe a fault, unlike Task.Wait (which throws AggregateException).
+        var waitHandle = ((IAsyncResult)tcs.Task).AsyncWaitHandle;
+        if (!waitHandle.WaitOne(timeout)
+            && Interlocked.CompareExchange(ref state, Abandoned, Queued) == Queued)
         {
-            Interlocked.Exchange(ref abandoned, 1);
-            if (!tcs.Task.IsCompleted)
-            {
-                throw new CadException(
-                    ErrorCodes.Busy,
-                    "AutoCAD's main thread did not pick up the request in time.",
-                    "AutoCAD is probably running a command or showing a dialog. Finish or cancel it (Esc), then re-query and retry.");
-            }
+            throw new CadException(
+                ErrorCodes.Busy,
+                "AutoCAD's main thread did not pick up the request in time; nothing was changed.",
+                "AutoCAD is probably running a command or showing a dialog. Finish or cancel it (Esc), then re-query and retry.");
         }
 
+        // Either finished in time, or already running: wait for the real outcome.
         return tcs.Task.GetAwaiter().GetResult();
     }
 

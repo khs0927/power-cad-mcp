@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Callable
+from functools import partial
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -89,16 +90,22 @@ class PowerCad:
             return default
 
         if op == "line":
-            result = b.add_line(to_point(take("start"), "start"), to_point(take("end"), "end"), props)
+            result = partial(
+                b.add_line, to_point(take("start"), "start"), to_point(take("end"), "end"), props
+            )
         elif op == "polyline":
-            result = b.add_polyline(to_points(take("points")), bool(take("closed", False)), props)
+            result = partial(b.add_polyline, to_points(take("points")), bool(take("closed", False)), props)
         elif op == "rectangle":
-            result = b.add_rectangle(
-                to_point(take("corner1"), "corner1"), to_point(take("corner2"), "corner2"), props
+            result = partial(
+                b.add_rectangle,
+                to_point(take("corner1"), "corner1"),
+                to_point(take("corner2"), "corner2"),
+                props,
             )
         elif op == "polygon":
             sides = int(take("sides"))
-            result = b.add_polygon(
+            result = partial(
+                b.add_polygon,
                 to_point(take("center"), "center"),
                 require_positive(take("radius"), "radius"),
                 sides,
@@ -106,11 +113,15 @@ class PowerCad:
                 props,
             )
         elif op == "circle":
-            result = b.add_circle(
-                to_point(take("center"), "center"), require_positive(take("radius"), "radius"), props
+            result = partial(
+                b.add_circle,
+                to_point(take("center"), "center"),
+                require_positive(take("radius"), "radius"),
+                props,
             )
         elif op == "arc":
-            result = b.add_arc(
+            result = partial(
+                b.add_arc,
                 to_point(take("center"), "center"),
                 require_positive(take("radius"), "radius"),
                 float(take("start_angle")),
@@ -124,14 +135,15 @@ class PowerCad:
             major = to_point(take("major_axis"), "major_axis")
             if major == (0.0, 0.0, 0.0):
                 raise CadError("major_axis must be a non-zero vector.")
-            result = b.add_ellipse(to_point(take("center"), "center"), major, ratio, props)
+            result = partial(b.add_ellipse, to_point(take("center"), "center"), major, ratio, props)
         elif op == "point":
-            result = b.add_point(to_point(take("location"), "location"), props)
+            result = partial(b.add_point, to_point(take("location"), "location"), props)
         elif op == "text":
             text = str(take("text"))
             if not text:
                 raise CadError("text must not be empty.")
-            result = b.add_text(
+            result = partial(
+                b.add_text,
                 text,
                 to_point(take("insert"), "insert"),
                 require_positive(take("height", 2.5), "height"),
@@ -145,7 +157,8 @@ class PowerCad:
             width = float(take("width", 0.0))
             if width < 0:
                 raise CadError("width must be >= 0.")
-            result = b.add_mtext(
+            result = partial(
+                b.add_mtext,
                 text,
                 to_point(take("insert"), "insert"),
                 width,
@@ -162,14 +175,15 @@ class PowerCad:
             if text_height is not None:
                 props["text_height"] = require_positive(text_height, "text_height")
             if kind == "aligned":
-                result = b.add_aligned_dimension(p1, p2, loc, props)
+                result = partial(b.add_aligned_dimension, p1, p2, loc, props)
             elif kind in ("linear", "rotated", "horizontal", "vertical"):
                 rotation = {"horizontal": 0.0, "vertical": 90.0}.get(kind, float(take("rotation", 0.0)))
-                result = b.add_linear_dimension(p1, p2, loc, rotation, props)
+                result = partial(b.add_linear_dimension, p1, p2, loc, rotation, props)
             else:
                 raise CadError("kind must be aligned, linear, horizontal or vertical.")
         elif op == "hatch":
-            result = b.add_hatch(
+            result = partial(
+                b.add_hatch,
                 str(take("boundary")),
                 str(take("pattern", "ANSI31")),
                 require_positive(take("scale", 1.0), "scale"),
@@ -177,7 +191,8 @@ class PowerCad:
                 props,
             )
         elif op == "block":
-            result = b.insert_block(
+            result = partial(
+                b.insert_block,
                 str(take("name")),
                 to_point(take("insert"), "insert"),
                 require_positive(take("scale", 1.0), "scale"),
@@ -189,9 +204,11 @@ class PowerCad:
                 f"Unknown op {op!r}. Use line, polyline, rectangle, polygon, circle, arc, ellipse, point, "
                 "text, mtext, dimension, hatch or block."
             )
+        # Every argument is parsed and checked before anything is created, so a rejected item
+        # never leaves geometry behind.
         if a:
             raise CadError(f"'{op}' got unexpected argument(s): {', '.join(sorted(a))}.")
-        return result
+        return result()
 
 
 def create_server(backend: CadBackend | None = None, settings: Settings | None = None) -> MCPServer:
@@ -679,9 +696,12 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         ] = None,
     ) -> dict[str, Any]:
         """Export the drawing: AutoCAD → pdf/dwg/dxf/png/bmp/wmf; headless → dxf/png/pdf/svg."""
-        fmt = (format or os.path.splitext(path)[1].lstrip(".")).lower()
+        path_ext = os.path.splitext(path)[1].lstrip(".").lower()
+        fmt = (format or path_ext).lower()
         if not fmt:
             raise CadError("Give a format or a path with an extension.")
+        if path_ext and path_ext != fmt:
+            raise CadError(f"The path ends in .{path_ext} but format is {fmt!r}; make them match.")
         return b.export(cad.path(path, ext="." + fmt), fmt)
 
     @tool(READ)
