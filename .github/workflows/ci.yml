@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.6"
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -v
+      - run: python -m power_cad_mcp --backend dxf --check
+
+  dotnet:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet restore dotnet/PowerCad.sln
+      - name: Build (server, core, tests and the AutoCAD 2027 plugin against AutoCAD.NET 26.0.0)
+        run: dotnet build dotnet/PowerCad.sln -c Release --no-restore
+      - run: dotnet test dotnet/PowerCad.Tests -c Release --no-build --logger "console;verbosity=normal"
+
+  package-windows:
+    needs: [dotnet]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build bundle and self-contained server
+        shell: bash
+        run: ./scripts/build_dotnet.sh
+      - name: Smoke-test the published server
+        shell: bash
+        run: ./dist/server/win-x64/power-cad-server.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PowerCad-win-x64
+          path: |
+            dist/PowerCad.bundle/
+            dist/server/win-x64/power-cad-server.exe
+            scripts/install_autocad_plugin.ps1
+
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - name: Smoke-test the built wheel in a clean venv
+        run: |
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install dist/*.whl
+          /tmp/wheeltest/bin/power-cad-mcp --version
+          /tmp/wheeltest/bin/power-cad-mcp --backend dxf --check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

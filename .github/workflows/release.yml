@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Build, test and package
+        shell: bash
+        run: ./scripts/build_dotnet.sh
+      - name: Assemble release zip
+        shell: pwsh
+        run: |
+          $stage = "PowerCad-${{ github.ref_name }}-win-x64"
+          New-Item -ItemType Directory -Force "$stage/dist/server/win-x64", "$stage/scripts" | Out-Null
+          Copy-Item dist/PowerCad.bundle "$stage/dist/PowerCad.bundle" -Recurse
+          Copy-Item dist/server/win-x64/power-cad-server.exe "$stage/dist/server/win-x64/"
+          Copy-Item scripts/install_autocad_plugin.ps1 "$stage/scripts/"
+          Copy-Item README.md, LICENSE "$stage/"
+          Copy-Item docs/framework "$stage/docs" -Recurse
+          & "$stage/dist/server/win-x64/power-cad-server.exe" --version
+          Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip"
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "PowerCad-${{ github.ref_name }}-win-x64.zip" \
+            --repo "${{ github.repository }}" \
+            --title "Power CAD ${{ github.ref_name }}" \
+            --notes "AutoCAD 2027 plugin bundle + self-contained power-cad-server.exe (win-x64).
+
+          Install: unzip, then run in PowerShell from the unzipped folder:
+          powershell -ExecutionPolicy Bypass -File scripts\\install_autocad_plugin.ps1 -SkipBuild
+
+          Then restart AutoCAD 2027 and run POWERCAD_STATUS. Try without AutoCAD: dist\\server\\win-x64\\power-cad-server.exe --simulate"
