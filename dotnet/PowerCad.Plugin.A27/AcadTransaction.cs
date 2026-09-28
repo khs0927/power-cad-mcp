@@ -375,6 +375,12 @@ internal sealed partial class AcadTransaction(Database db, Transaction tr) : ICa
             AddAttributes(br);
         }
 
+        if (ent is Dimension dim)
+        {
+            // without this the dimension has no graphics (and TextPosition stays at the origin) until a regen
+            dim.RecomputeDimensionBlock(true);
+        }
+
         switch (ent)
         {
             case DBText t:

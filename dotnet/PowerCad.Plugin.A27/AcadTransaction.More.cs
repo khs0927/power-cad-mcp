@@ -270,10 +270,13 @@ internal sealed partial class AcadTransaction
         tr.AddNewlyCreatedDBObject(h, true);
         Step("hatch pattern", () =>
         {
-            h.PatternScale = spec.Scale;
-            h.PatternAngle = spec.Rotation / Deg;
             try
             {
+                // scale/angle are rejected (eInvalidInput) while the hatch has no pattern yet; set the
+                // pattern first, then scale/angle, then set it again so the definition picks them up
+                h.SetHatchPattern(HatchPatternType.PreDefined, spec.Pattern);
+                h.PatternAngle = spec.Rotation / Deg;
+                h.PatternScale = spec.Scale;
                 h.SetHatchPattern(HatchPatternType.PreDefined, spec.Pattern);
             }
             catch (Autodesk.AutoCAD.Runtime.Exception)

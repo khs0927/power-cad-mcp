@@ -9,19 +9,37 @@
 
 ## 0. 도구 선택
 
-| 작업 | Power CAD MCP 0.2.0 | COM (`com_plan_runner.py`) |
-| --- | --- | --- |
-| 조회(선·폴리선·문자·블록) | `cad_query` ✅ | – |
-| **치수(DIMENSION) 조회** | ❌ 결과에서 빠짐(0.2.0은 치수를 반환하지 않음) | `--dump-dims x0 y0 x1 y1` ✅ |
-| **치수 생성** | ❌ (`create`에 dimension 없음) | `add_dimension` op ✅ |
-| 삭제 / 폴리선 합치기 / 축척 | ❌ | `delete` / `replace_polylines` / `scale` ✅ |
-| 이동·문자 변경·생성 | ✅ (검증 포함) | `set_text` 도 가능 |
+**먼저 `cad_status`의 `commands`를 본다.** `delete`·`transform`·`snapshot`이 있으면 0.3.0 이상 → MCP만으로 작업한다.
+없으면 0.2.0 → 아래 표의 COM 열로 폴백. (서버만 새 버전이면 새 도구가 `PLUGIN_OUTDATED`를 돌려준다: AutoCAD를 닫고
+`scripts/install_autocad_plugin.ps1` 재실행 후 AutoCAD 재시작.)
 
-- **플러그인 0.3.0 이후**(`cad_status.commands`에 `delete`, `transform`, `snapshot` 포함)에는
-  `cad_query types:["DIMENSION"]`가 치수(kind, xline1/2, dimline, style, measurement)를 반환한다 → MCP를 우선 사용하고 COM은 폴백.
-- 작업 트리의 `feat/full-toolset` 브랜치에는 dimension/hatch/delete를 지원하는 플러그인 코드가 있으나
-  **빌드·재설치·AutoCAD 재시작 전까지는 로드된 0.2.0이 쓰인다.** `cad_status`의 `commands` 목록으로 확인할 것.
-- COM 작업 순서: ① 계획 JSON 작성 → ② `python scripts/com_plan_runner.py PLAN.json` (검증만) →
+| 작업 | MCP 0.3.0 (실기 검증 2026-09-29) | 0.2.0일 때 COM 폴백 (`com_plan_runner.py`) |
+| --- | --- | --- |
+| 조회 | `cad_query`, `cad_get`, 치수 포함(`types:["DIMENSION"]`) ✅ | `--dump-dims x0 y0 x1 y1` |
+| 도면 자원(스타일·블록·범위) | `cad_inspect` ✅ | – |
+| 레이어 조회·생성·색/선종류 | `cad_layers`, `cad_set_layer` ✅ | – |
+| 생성: 선·폴리선·원·호·문자(정렬)·MTEXT·점 | `cad_create` ✅ | – |
+| 생성: 치수(rotated/aligned) | `cad_create {type:"dimension", p1, p2, offset, style}` ✅ | `add_dimension` op |
+| 생성: 해치 | `cad_create {type:"hatch", points, pattern, scale}` ⚠️ 아래 주의 | – |
+| 삭제 | `cad_delete` ✅ | `delete` op |
+| 이동·복사(배열) | `cad_move`, `cad_copy` ✅ | – |
+| 회전·축척·대칭 | `cad_transform` ✅ | `scale` op |
+| 색·레이어·문자 높이·정렬 변경 | `cad_set_properties` ✅ | – |
+| 문자 내용 변경 | `cad_replace_text` ✅ | `set_text` op |
+| 폴리선 합치기(벽 접합부) | `cad_batch` [create 합친 윤곽 + delete 원본들] ✅ | `replace_polylines` op |
+| 결과 눈으로 확인 | `cad_snapshot {window}` ✅ (요청 영역 그대로 PNG) | – |
+
+주의 (실기 검증에서 나온 것)
+- **여러 단계를 한 번에 → `cad_batch`.** 한 단계라도 실패하면 전체가 롤백된다(검증함). 오류 메시지에 `steps[i]`가 나온다.
+- **`expect_fingerprint`를 꼭 넣는다.** 틀리면 `STALE_TARGET`으로 거부된다(검증함) → `cad_get`으로 다시 읽고 재시도.
+- `cad_create`에서 해치 경계는 `points`(닫힌 다각형 꼭짓점)다. `boundary`가 아니다. 모르는 인자는 `INVALID_PARAMS`로 허용 목록을 알려 준다.
+- **해치:** 한 `cad_create`에 해치를 섞지 말고 따로 만든다. 해치가 실패하면 같은 호출의 다른 개체도 모두 롤백된다.
+  오류에 `hatch pattern` / `hatch boundary` 단계가 표시된다.
+- **치수 스타일:** `ISO-25`처럼 축척 1인 스타일은 mm 도면에서 글자·화살표가 거의 안 보인다. 도면 축척에 맞는
+  스타일(예: `80` = 1/80)을 `cad_inspect sections:["dim_styles"]`로 찾아 `style`에 지정한다.
+- **`cad_snapshot`은 도면을 바꾸지 않는다.** 수정할 때마다 전후 스냅샷을 찍어 사용자에게 보여 준다.
+
+COM 폴백을 쓸 때의 작업 순서: ① 계획 JSON 작성 → ② `python scripts/com_plan_runner.py PLAN.json` (검증만) →
   ③ `ok:true` 확인 후 `--apply` → ④ `cad_get`으로 새 핸들을 **MCP로 교차 확인**.
   모든 op는 한 UNDO 그룹이므로 AutoCAD에서 `UNDO` 1회로 전체 되돌림.
 - **도면은 저장되지 않는다.** 적용 후 사용자가 저장하기 전에 AutoCAD가 꺼지면 수정이 사라진다 → 적용 직후 사용자에게 저장(`QSAVE`)을 요청.
