@@ -36,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install_autocad_plugin.ps1
 .NET 10 SDK가 없으면 winget으로 설치한 뒤 플러그인과 서버를 빌드하고, AutoCAD 번들을
 `%APPDATA%\Autodesk\ApplicationPlugins\PowerCad.bundle`에 설치하고, Claude Desktop에 `power-cad`를 등록합니다.
 AutoCAD를 재시작한 뒤 명령줄에서 `POWERCAD_STATUS`로 확인하세요.
-빌드 없이 쓰려면 GitHub Actions의 `PowerCad-win-x64` 아티팩트를 받아 압축을 풀고 `scripts\install_autocad_plugin.ps1 -SkipBuild`를 실행합니다.
+빌드 없이 쓰려면 [Releases](https://github.com/khs0927/power-cad-mcp/releases)에서 `PowerCad-<버전>-win-x64.zip`을 받아 압축을 풀고, 그 폴더에서 `powershell -ExecutionPolicy Bypass -File scripts\install_autocad_plugin.ps1 -SkipBuild`를 실행합니다.
 
 AutoCAD 없이 먼저 써 보기: `power-cad-server --simulate` (샘플 평면도: 벽, 실명, 동적 문, 창, 잠긴 레이어).
 
