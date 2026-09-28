@@ -50,7 +50,7 @@ public sealed class App : IExtensionApplication
 
         _invoker ??= new MainThreadInvoker();
         var readOnly = Environment.GetEnvironmentVariable("POWER_CAD_READ_ONLY") is "1" or "true";
-        var dispatcher = new CommandDispatcher(new AcadDocument(_invoker, TimeSpan.FromSeconds(55)), new DispatcherOptions { ReadOnly = readOnly });
+        var dispatcher = new CommandDispatcher(new AcadDocument(_invoker, BusyTimeout()), new DispatcherOptions { ReadOnly = readOnly });
         var pid = Environment.ProcessId;
         _info = new DiscoveryInfo(
             SchemaVersion: 1,
@@ -68,6 +68,16 @@ public sealed class App : IExtensionApplication
         _server.Start();
         _store.Write(_info);
     }
+
+    /// <summary>
+    /// How long a request may wait for AutoCAD's main thread before failing with CAD_BUSY. Kept well
+    /// below common MCP client/bridge timeouts (~60 s) so the agent gets a clear answer instead of a
+    /// dropped call. POWER_CAD_BUSY_TIMEOUT (seconds, 3-300) overrides it.
+    /// </summary>
+    private static TimeSpan BusyTimeout() =>
+        int.TryParse(Environment.GetEnvironmentVariable("POWER_CAD_BUSY_TIMEOUT"), out var s) && s is >= 3 and <= 300
+            ? TimeSpan.FromSeconds(s)
+            : TimeSpan.FromSeconds(20);
 
     internal void Stop()
     {

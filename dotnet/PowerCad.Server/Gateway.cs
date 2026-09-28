@@ -39,7 +39,6 @@ public sealed class SimulatorGateway(InMemoryCadDocument document, bool readOnly
 /// <summary>Connects to AutoCAD plugins found through discovery files; reconnects after restarts.</summary>
 public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool readOnly) : ICadGateway, IAsyncDisposable
 {
-    private static readonly HashSet<string> Mutating = ["replace_text", "move", "modify_opening", "create", "batch"];
     private readonly Lock _lock = new();
     private PipeClient? _client;
     private string? _pinned = pinnedTarget;
@@ -48,7 +47,7 @@ public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool
 
     public async Task<JsonNode?> SendAsync(string command, JsonObject? parameters, CancellationToken ct)
     {
-        if (readOnly && Mutating.Contains(command))
+        if (readOnly && CommandDispatcher.Mutating.Contains(command))
         {
             throw new CadException(ErrorCodes.ReadOnly, "The server runs with --read-only.", "Restart without --read-only to allow edits.");
         }
@@ -61,7 +60,7 @@ public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool
         catch (CadException e) when (e.Code is ErrorCodes.NotConnected or ErrorCodes.Unauthorized)
         {
             Drop(client);
-            if (command is "status" or "query" or "get")
+            if (command is "status" or "query" or "get" or "inspect" or "layers")
             {
                 // Read-only calls are safe to retry once against a freshly discovered plugin.
                 return await Resolve().SendAsync(command, parameters, ct).ConfigureAwait(false);

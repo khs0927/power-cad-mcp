@@ -13,6 +13,12 @@ public interface ICadDocument
     /// aborts it, so a failed verification leaves the drawing untouched.
     /// </summary>
     T Execute<T>(Func<ICadTransaction, T> work, bool commit);
+
+    /// <summary>
+    /// Zooms the active view to the window (no database change). When <paramref name="snapshotWidth"/> is
+    /// set, also renders the view and returns it as a base64 PNG under "image_base64".
+    /// </summary>
+    JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight);
 }
 
 public interface ICadTransaction
@@ -37,6 +43,30 @@ public interface ICadTransaction
 
     /// <summary>Creates an entity from a validated spec (see <see cref="Commands.CreateSpec"/>) and returns its handle.</summary>
     string Create(Commands.CreateSpec spec);
+
+    /// <summary>Erases a model-space entity.</summary>
+    void Delete(string handle);
+
+    /// <summary>Changes layer/color/linetype/lineweight and, for TEXT/MTEXT, height/rotation/style/justification.</summary>
+    void SetProperties(string handle, PropertyEdit edit);
+
+    /// <summary>Copies an entity, displaces the copy and returns its handle.</summary>
+    string Copy(string handle, Vec3 displacement);
+
+    /// <summary>Rotates, scales or mirrors an entity in place. TEXT/MTEXT stay readable when mirrored (MIRRTEXT=0).</summary>
+    void Transform(string handle, Transform2D transform);
+
+    /// <summary>All layers (name, color, linetype, lineweight, on, frozen, locked, plot, current).</summary>
+    IReadOnlyList<JsonObject> Layers();
+
+    /// <summary>Creates or changes one layer.</summary>
+    void SetLayer(LayerEdit edit);
+
+    /// <summary>Drawing resources: units, current settings, text/dim styles, linetypes, blocks, extents.</summary>
+    JsonObject Inspect();
+
+    /// <summary>True when the named resource exists. kind: text_style, dim_style, linetype, layer.</summary>
+    bool ResourceExists(string kind, string name);
 }
 
 /// <summary>Changes to a block reference (doors, windows, openings...). Null means "leave as is".</summary>

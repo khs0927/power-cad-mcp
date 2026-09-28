@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Authors>khs0927</Authors>
     <Product>Power CAD MCP</Product>
     <Copyright>Copyright (c) 2026 khs0927</Copyright>

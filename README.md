@@ -18,9 +18,19 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 10개: `cad_status`, `cad_list_targets`, `cad_select_target`, `cad_query`, `cad_get`,
-`cad_replace_text`(문자 변경), `cad_move`(객체 이동), `cad_modify_opening`(문·창·개구부 폭/위치/회전/반전/속성),
-`cad_create`, `cad_batch`(최대 20단계 원자적 실행).
+도구 19개:
+
+| 분류 | 도구 |
+| --- | --- |
+| 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
+| 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
+| 작성 | `cad_create` — line, polyline, circle, arc, text(`justify`·`style`·`width_factor`), mtext, insert, point, **dimension**(rotated/aligned, 스타일·문자 재지정), **hatch**(SOLID·ANSI31 등), 공통 `color`/`linetype`/`lineweight` |
+| 수정 | `cad_replace_text`, `cad_move`, `cad_modify_opening`, `cad_set_properties`(레이어·색·선종류·선가중치·문자 높이/회전/스타일/정렬), `cad_copy`(배열 복사), `cad_transform`(회전·축척·대칭, 문자는 읽히는 방향 유지), `cad_delete` |
+| 레이어 | `cad_set_layer`(생성·색·선종류·선가중치·켜기/동결/플롯·현재 레이어, 잠금 해제는 사용자 확인 필요) |
+| 화면 | `cad_zoom`, `cad_snapshot`(모델 뷰를 PNG로 반환해 결과를 눈으로 확인) |
+| 묶음 | `cad_batch`(최대 20단계를 한 트랜잭션으로, 위 수정 명령 모두 사용 가능) |
+
+AutoCAD가 명령·대화상자로 바쁘면 20초 안에 `CAD_BUSY`로 답합니다(`POWER_CAD_BUSY_TIMEOUT`, 초 단위로 변경).
 
 모든 수정은 같은 절차를 거칩니다: **지문으로 대상 확인 → 한 트랜잭션에서 변경 → 변경된 대상만 재검증 → 실패 시 전체 롤백 → before/after 보고**.
 `dry_run: true`로 실제와 같은 조건의 미리보기를 받을 수 있습니다.

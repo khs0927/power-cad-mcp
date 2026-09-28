@@ -42,5 +42,23 @@ public static class CadJson
         return Convert.ToHexString(bytes, 0, 8).ToLowerInvariant();
     }
 
+    /// <summary>Reads any JSON number (int/long/double, parsed or constructed) as a double.</summary>
+    public static bool TryNumber(JsonNode? node, out double value)
+    {
+        value = 0;
+        if (node is not JsonValue v || v.GetValueKind() != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        if (v.TryGetValue(out double d))
+        {
+            value = d;
+            return true;
+        }
+
+        return double.TryParse(v.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
     public static string Format(double d) => Round(d).ToString("R", CultureInfo.InvariantCulture);
 }

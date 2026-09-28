@@ -38,14 +38,16 @@ public sealed record EntityState(string Handle, string Type, string Layer, JsonO
 
     public Vec3? Point(string key) => Props[key] is JsonArray ? Vec3.FromJson(Props[key], key) : null;
 
-    public double? Number(string key) => Props[key] is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+    public double? Number(string key) => CadJson.TryNumber(Props[key], out var d) ? d : null;
 
     /// <summary>The point that moves one-to-one with a translation (used to verify moves).</summary>
     public Vec3? Anchor => Type switch
     {
         EntityTypes.Line => Point("start"),
         EntityTypes.Circle or EntityTypes.Arc => Point("center"),
-        EntityTypes.Polyline => Props["points"] is JsonArray { Count: > 0 } pts ? Vec3.FromJson(pts[0], "points[0]") : null,
+        EntityTypes.Polyline or EntityTypes.Hatch => Props["points"] is JsonArray { Count: > 0 } pts ? Vec3.FromJson(pts[0], "points[0]") : null,
+        EntityTypes.Dimension => Point("xline1"),
+        EntityTypes.Text or EntityTypes.MText => Point("alignment_point") ?? Point("position"),
         _ => Point("position"),
     };
 }
@@ -60,6 +62,8 @@ public static class EntityTypes
     public const string MText = "MTEXT";
     public const string Insert = "INSERT";
     public const string Point = "POINT";
+    public const string Dimension = "DIMENSION";
+    public const string Hatch = "HATCH";
 
     public static readonly string[] TextLike = [Text, MText];
 }
