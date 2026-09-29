@@ -90,7 +90,7 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_block_library", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
+            ["cad_batch", "cad_block_library", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_query", "cad_replace_text", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
 

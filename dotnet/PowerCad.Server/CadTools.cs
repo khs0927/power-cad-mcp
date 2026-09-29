@@ -199,7 +199,7 @@ public sealed partial class CadTools(ICadGateway gateway)
         Call("create", new JsonObject { ["entities"] = JsonNode.Parse(entities.GetRawText()), ["dry_run"] = dry_run }, ct);
 
     [McpServerTool(Name = "cad_batch", Destructive = true)]
-    [Description("Run up to 20 edit steps atomically in ONE transaction: [{command: replace_text|move|modify_opening|create|delete|set_properties|copy|transform|set_layer, params: {...same as the tools...}}]. Any failed step or check rolls everything back.")]
+    [Description("Run up to 20 edit steps atomically in ONE transaction: [{command: replace_text|move|modify_opening|create|delete|set_properties|copy|transform|offset|set_layer, params: {...same as the tools...}}]. Any failed step or check rolls everything back.")]
     public Task<string> Batch(
         [Description("Steps, max 20")] JsonElement steps,
         [Description("Preview: run, verify and report, then roll back")] bool dry_run = false,

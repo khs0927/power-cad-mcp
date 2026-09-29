@@ -177,6 +177,47 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
         },
         timeout);
 
+    public JsonObject Save(SaveRequest request) => invoker.Invoke(
+        () =>
+        {
+            var doc = AcApp.DocumentManager.MdiActiveDocument
+                ?? throw new CadException(ErrorCodes.NoDocument, "No drawing is open in AutoCAD.", "Open or create a drawing first.");
+            using (doc.LockDocument())
+            {
+                var db = doc.Database;
+                string path;
+                if (request.Copy)
+                {
+                    // Wblock clones the whole database, so the open drawing (its name, dirty flag) is untouched.
+                    path = request.Path!;
+                    using var clone = db.Wblock();
+                    if (request.Format == "dxf")
+                    {
+                        clone.DxfOut(path, 16, DwgVersion.Current);
+                    }
+                    else
+                    {
+                        clone.SaveAs(path, DwgVersion.Current);
+                    }
+                }
+                else
+                {
+                    path = request.Path ?? (doc.IsNamedDrawing
+                        ? doc.Name
+                        : throw new CadException(ErrorCodes.InvalidParams, $"'{doc.Name}' has never been saved.", "Give 'path' for the first save."));
+                    db.SaveAs(path, true, DwgVersion.Current, db.SecurityParameters);
+                }
+
+                return new JsonObject
+                {
+                    ["path"] = path,
+                    ["format"] = request.Format,
+                    ["bytes"] = new FileInfo(path).Length,
+                };
+            }
+        },
+        timeout);
+
     internal static CadException Translate(Autodesk.AutoCAD.Runtime.Exception e) => e.ErrorStatus switch
     {
         ErrorStatus.OnLockedLayer => new CadException(ErrorCodes.LockedLayer, "The entity is on a locked layer.", "Ask the user before unlocking it."),

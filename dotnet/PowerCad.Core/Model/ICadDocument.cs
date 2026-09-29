@@ -19,7 +19,17 @@ public interface ICadDocument
     /// set, also renders the view and returns it as a base64 PNG under "image_base64".
     /// </summary>
     JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight);
+
+    /// <summary>
+    /// Writes the drawing to disk. With <see cref="SaveRequest.Copy"/> a copy goes to the given path and the
+    /// open document is untouched; otherwise the open document itself is saved (DWG only). The dispatcher
+    /// has already validated the path, format, overwrite and user-confirmation rules.
+    /// </summary>
+    JsonObject Save(SaveRequest request);
 }
+
+/// <summary>A validated save request. Path is absolute; Format is "dwg" or "dxf".</summary>
+public sealed record SaveRequest(string? Path, string Format, bool Copy);
 
 public interface ICadTransaction
 {

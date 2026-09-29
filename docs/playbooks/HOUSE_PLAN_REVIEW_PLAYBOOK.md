@@ -28,6 +28,9 @@
 | 문자 내용 변경 | `cad_replace_text` ✅ | `set_text` op |
 | 폴리선 합치기(벽 접합부) | `cad_batch` [create 합친 윤곽 + delete 원본들] ✅ | `replace_polylines` op |
 | 결과 눈으로 확인 | `cad_snapshot {window}` ✅ (요청 영역 그대로 PNG) | – |
+| 실면적·길이 (0.4.0) | `cad_measure {handles}` → 닫힌 폴리선 면적(mm²·m²)·둘레, 선·호 길이 | – |
+| 벽 두께선·평행선 (0.4.0) | `cad_offset {distance, side: left/right/inside/outside 또는 through, count}` | – |
+| 도면 저장 (0.4.0) | `cad_save` 기본 사본(`path` 필수) · 원본 저장은 `mode:"save", user_confirmed:true` (사용자에게 먼저 묻기) | – |
 
 주의 (실기 검증에서 나온 것)
 - **여러 단계를 한 번에 → `cad_batch`.** 한 단계라도 실패하면 전체가 롤백된다(검증함). 오류 메시지에 `steps[i]`가 나온다.
@@ -42,7 +45,7 @@
 COM 폴백을 쓸 때의 작업 순서: ① 계획 JSON 작성 → ② `python scripts/com_plan_runner.py PLAN.json` (검증만) →
   ③ `ok:true` 확인 후 `--apply` → ④ `cad_get`으로 새 핸들을 **MCP로 교차 확인**.
   모든 op는 한 UNDO 그룹이므로 AutoCAD에서 `UNDO` 1회로 전체 되돌림.
-- **도면은 저장되지 않는다.** 적용 후 사용자가 저장하기 전에 AutoCAD가 꺼지면 수정이 사라진다 → 적용 직후 사용자에게 저장(`QSAVE`)을 요청.
+- **도면은 저장되지 않는다.** 적용 후 사용자가 저장하기 전에 AutoCAD가 꺼지면 수정이 사라진다 → 적용 직후 사용자에게 저장 여부를 묻고, 동의하면 `cad_save {mode:"save", user_confirmed:true}`(0.4.0), 아니면 `cad_save {path:"...\\백업.dwg"}`로 사본만 남긴다.
 
 ## 1. 항목별 판정 규칙
 

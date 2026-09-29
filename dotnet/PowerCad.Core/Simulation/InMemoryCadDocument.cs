@@ -77,6 +77,34 @@ public sealed class InMemoryCadDocument : ICadDocument
         return o;
     }
 
+    /// <summary>The simulator has no DWG writer: it writes its entities as JSON to the requested path.</summary>
+    public JsonObject Save(SaveRequest request)
+    {
+        var path = request.Path ?? (Path.IsPathFullyQualified(Name)
+            ? Name
+            : throw new CadException(ErrorCodes.InvalidParams, "This drawing has never been saved.", "Give 'path' for the first save."));
+        var entities = Execute(tx => new JsonArray(tx.ScanModelSpace().Select(e => (JsonNode)e.ToJson()).ToArray()), commit: false);
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        File.WriteAllText(path, new JsonObject { ["document"] = Name, ["format"] = request.Format, ["entities"] = entities }.ToJsonString());
+        if (!request.Copy)
+        {
+            Name = path;
+        }
+
+        return new JsonObject
+        {
+            ["path"] = path,
+            ["format"] = request.Format,
+            ["bytes"] = new FileInfo(path).Length,
+            ["note"] = "simulator: entities written as JSON",
+        };
+    }
+
     // ----------------------------------------------------------------- setup
     public void AddLayer(string name, bool locked = false)
     {

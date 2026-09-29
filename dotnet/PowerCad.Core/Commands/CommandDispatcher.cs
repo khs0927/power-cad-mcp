@@ -20,18 +20,18 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
 
     public static readonly IReadOnlyList<string> Commands =
     [
-        "status", "query", "get", "inspect", "layers", "zoom", "snapshot",
-        "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer", "batch",
-        "export_block", "import_block", "export_hatch_pattern",
+        "status", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
+        "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch",
+        "export_block", "import_block", "export_hatch_pattern", "save",
     ];
 
-    /// <summary>Commands that change the drawing (refused in read-only mode).</summary>
+    /// <summary>Commands that change the drawing (refused in read-only mode). "save" is checked per mode.</summary>
     public static readonly IReadOnlySet<string> Mutating = new HashSet<string>(
-        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer", "batch", "import_block"]);
+        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch", "import_block"]);
 
     /// <summary>Commands that may appear as batch steps.</summary>
     private static readonly HashSet<string> Batchable =
-        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer"];
+        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer"];
 
     public JsonNode Execute(string command, JsonObject? parameters)
     {
@@ -48,6 +48,8 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
             "get" => document.Execute(tx => Get(tx, p), commit: false),
             "inspect" => document.Execute(tx => Inspect(tx, p), commit: false),
             "layers" => document.Execute(tx => ListLayers(tx, p), commit: false),
+            "measure" => document.Execute(tx => Measure(tx, p), commit: false),
+            "save" => Save(p),
             "zoom" => View(p, snapshot: false),
             "snapshot" => View(p, snapshot: true),
             _ when Batchable.Contains(command) => RunChange(p, (s, q) => Apply(command, s, q)),
@@ -115,6 +117,9 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
                 break;
             case "set_layer":
                 SetLayer(s, p);
+                break;
+            case "offset":
+                Offset(s, p);
                 break;
             default:
                 throw new CadException(ErrorCodes.UnknownCommand, $"'{command}' cannot run inside a batch.");

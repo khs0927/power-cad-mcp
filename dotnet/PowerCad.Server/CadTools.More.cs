@@ -187,6 +187,54 @@ public sealed partial class CadTools
             ["dry_run"] = dry_run,
         }, ct);
 
+    [McpServerTool(Name = "cad_measure", ReadOnly = true, Idempotent = true)]
+    [Description("Measure without changing anything: length of LINE/ARC/polyline, perimeter and area of closed polylines (arc segments included) and circles, hatch area, plus totals; 'points' measures a path. In mm drawings areas are also given in m² (room areas).")]
+    public Task<string> Measure(
+        [Description("Entities to measure")] string[]? handles = null,
+        [Description("Path [[x,y],[x,y],...] to measure leg by leg")] double[][]? points = null,
+        CancellationToken ct = default) =>
+        Call("measure", new JsonObject { ["handles"] = Node(handles), ["points"] = Window(points) }, ct);
+
+    [McpServerTool(Name = "cad_offset", Destructive = false)]
+    [Description("Offset LINE, straight-edged LWPOLYLINE (corners mitred), CIRCLE or ARC by a distance, like AutoCAD OFFSET; count>1 makes parallel copies at distance×1..count (e.g. wall faces). The new entities keep the source's layer and look (or 'layer'); each is verified.")]
+    public Task<string> Offset(
+        [Description("Entities to offset")] EntityTarget[] targets,
+        [Description("Offset distance (> 0)")] double distance,
+        [Description("left | right (relative to the line/polyline direction) | inside | outside (circles, arcs, closed polylines)")] string? side = null,
+        [Description("A point on the wanted side (alternative to side)")] double[]? through = null,
+        [Description("Number of parallel copies (1-50, default 1)")] int? count = null,
+        [Description("Layer for the new entities (default: the source's layer)")] string? layer = null,
+        [Description("Preview: run, verify and report, then roll back")] bool dry_run = false,
+        CancellationToken ct = default) =>
+        Call("offset", new JsonObject
+        {
+            ["targets"] = Node(targets),
+            ["distance"] = distance,
+            ["side"] = side,
+            ["through"] = Point(through),
+            ["count"] = count,
+            ["layer"] = layer,
+            ["dry_run"] = dry_run,
+        }, ct);
+
+    [McpServerTool(Name = "cad_save", Destructive = true)]
+    [Description("Write the drawing to disk. mode=copy (default) writes a DWG/DXF copy to 'path' and leaves the open drawing untouched; an existing file is refused unless overwrite=true. mode=save saves the open drawing itself (DWG) and needs user_confirmed=true after asking the user; 'path' is required for a never-saved drawing.")]
+    public Task<string> Save(
+        [Description("copy | save")] string? mode = null,
+        [Description("Absolute path ending in .dwg or .dxf")] string? path = null,
+        [Description("dwg | dxf (default: from the path's extension)")] string? format = null,
+        [Description("Replace an existing file (only after the user agreed)")] bool? overwrite = null,
+        [Description("mode=save only: the user explicitly agreed to save the open drawing")] bool? user_confirmed = null,
+        CancellationToken ct = default) =>
+        Call("save", new JsonObject
+        {
+            ["mode"] = mode,
+            ["path"] = path,
+            ["format"] = format,
+            ["overwrite"] = overwrite,
+            ["user_confirmed"] = user_confirmed,
+        }, ct);
+
     [McpServerTool(Name = "cad_zoom", Idempotent = true)]
     [Description("Zoom AutoCAD's model view to a window, to entities (handles) or to the drawing extents. Does not change the drawing.")]
     public Task<string> Zoom(

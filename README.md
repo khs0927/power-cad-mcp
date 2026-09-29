@@ -18,17 +18,20 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 19개:
+도구 26개:
 
 | 분류 | 도구 |
 | --- | --- |
 | 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
 | 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
 | 작성 | `cad_create` — line, polyline, circle, arc, text(`justify`·`style`·`width_factor`), mtext, insert, point, **dimension**(rotated/aligned, 스타일·문자 재지정), **hatch**(SOLID·ANSI31 등), 공통 `color`/`linetype`/`lineweight` |
-| 수정 | `cad_replace_text`, `cad_move`, `cad_modify_opening`, `cad_set_properties`(레이어·색·선종류·선가중치·문자 높이/회전/스타일/정렬), `cad_copy`(배열 복사), `cad_transform`(회전·축척·대칭, 문자는 읽히는 방향 유지), `cad_delete` |
+| 수정 | `cad_replace_text`, `cad_move`, `cad_modify_opening`, `cad_set_properties`(레이어·색·선종류·선가중치·문자 높이/회전/스타일/정렬), `cad_copy`(배열 복사), `cad_transform`(회전·축척·대칭, 문자는 읽히는 방향 유지), `cad_offset`(선·직선 폴리선·원·호 간격띄우기, `count`로 여러 줄), `cad_delete` |
 | 레이어 | `cad_set_layer`(생성·색·선종류·선가중치·켜기/동결/플롯·현재 레이어, 잠금 해제는 사용자 확인 필요) |
+| 블록·패턴 자산 | `cad_block_library`, `cad_export_block`, `cad_import_block`, `cad_export_hatch_pattern`(해치 패턴을 .pat로 내보내기) |
+| 측정 | `cad_measure`(길이·둘레·면적(호 구간 포함)·경로 거리, mm 도면은 m² 병기 — 실면적표용) |
 | 화면 | `cad_zoom`, `cad_snapshot`(모델 뷰를 PNG로 반환해 결과를 눈으로 확인) |
 | 묶음 | `cad_batch`(최대 20단계를 한 트랜잭션으로, 위 수정 명령 모두 사용 가능) |
+| 저장 | `cad_save` — 기본 `copy`: 열린 도면은 그대로 두고 DWG/DXF 사본 저장(기존 파일은 `overwrite` 필요) · `save`: 열린 도면 자체 저장(`user_confirmed` 필요) |
 
 AutoCAD가 명령·대화상자로 바쁘면 20초 안에 `CAD_BUSY`로 답합니다(`POWER_CAD_BUSY_TIMEOUT`, 초 단위로 변경).
 
@@ -38,7 +41,7 @@ AutoCAD가 명령·대화상자로 바쁘면 20초 안에 `CAD_BUSY`로 답합�
 ### 설치 (Windows, AutoCAD 2027)
 
 ```powershell
-git clone https://github.com/khs0927/power-cad-mcp
+git clone -b feat/full-toolset https://github.com/khs0927/power-cad-mcp
 cd power-cad-mcp
 powershell -ExecutionPolicy Bypass -File scripts\install_autocad_plugin.ps1
 ```
@@ -53,7 +56,7 @@ AutoCAD 없이 먼저 써 보기: `power-cad-server --simulate` (샘플 평면�
 ### 개발
 
 ```bash
-./scripts/build_dotnet.sh          # restore → build(플러그인 포함) → 25개 테스트 → dist/PowerCad.bundle, dist/server/win-x64
+./scripts/build_dotnet.sh          # restore → build(플러그인 포함) → 41개 테스트 → dist/PowerCad.bundle, dist/server/win-x64
 dotnet test dotnet/PowerCad.Tests
 ```
 

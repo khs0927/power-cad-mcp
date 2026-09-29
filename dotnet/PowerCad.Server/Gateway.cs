@@ -47,7 +47,8 @@ public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool
 
     public async Task<JsonNode?> SendAsync(string command, JsonObject? parameters, CancellationToken ct)
     {
-        if (readOnly && CommandDispatcher.Mutating.Contains(command))
+        if (readOnly && (CommandDispatcher.Mutating.Contains(command)
+            || (command == "save" && parameters?["mode"]?.GetValue<string>() is { } mode && mode.Trim().Equals("save", StringComparison.OrdinalIgnoreCase))))
         {
             throw new CadException(ErrorCodes.ReadOnly, "The server runs with --read-only.", "Restart without --read-only to allow edits.");
         }
@@ -60,7 +61,7 @@ public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool
         catch (CadException e) when (e.Code is ErrorCodes.NotConnected or ErrorCodes.Unauthorized)
         {
             Drop(client);
-            if (command is "status" or "query" or "get" or "inspect" or "layers")
+            if (command is "status" or "query" or "get" or "inspect" or "layers" or "measure")
             {
                 // Read-only calls are safe to retry once against a freshly discovered plugin.
                 return await Resolve().SendAsync(command, parameters, ct).ConfigureAwait(false);

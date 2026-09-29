@@ -90,6 +90,13 @@ internal sealed partial class AcadTransaction(Database db, Transaction tr) : ICa
                 props["points"] = new JsonArray(Enumerable.Range(0, pl.NumberOfVertices)
                     .Select(i => (JsonNode)P(pl.GetPoint3dAt(i))).ToArray());
                 props["closed"] = pl.Closed;
+                if (Enumerable.Range(0, pl.NumberOfVertices).Any(i => Math.Abs(pl.GetBulgeAt(i)) > 1e-12))
+                {
+                    // arc segments: reported so measurements and offsets never treat them as straight
+                    props["bulges"] = new JsonArray(Enumerable.Range(0, pl.NumberOfVertices)
+                        .Select(i => (JsonNode)CadJson.Round(pl.GetBulgeAt(i))).ToArray());
+                }
+
                 break;
             case Arc a:
                 type = EntityTypes.Arc;
