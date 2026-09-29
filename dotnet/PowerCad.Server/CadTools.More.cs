@@ -22,6 +22,48 @@ public sealed partial class CadTools
         CancellationToken ct = default) =>
         Call("inspect", new JsonObject { ["sections"] = Node(sections) }, ct);
 
+    [McpServerTool(Name = "cad_export_block", Idempotent = true)]
+    [Description("Save a block definition from the current drawing as a reusable asset: a DWG in the block library "
+        + "(default Documents\\PowerCad\\blocks, override with POWER_CAD_BLOCK_LIBRARY) plus a JSON card with its texts, "
+        + "size, attributes and source drawing. The drawing itself is not changed.")]
+    public Task<string> ExportBlock(
+        [Description("Block name in the current drawing (see cad_inspect blocks)")] string name,
+        [Description("Optional file path or name inside the library; default <library>/<name>.dwg")] string? path = null,
+        [Description("What the asset is / when to use it")] string? description = null,
+        [Description("Search tags, e.g. [\"단열\", \"표\"]")] string[]? tags = null,
+        CancellationToken ct = default) =>
+        Call("export_block", new JsonObject { ["name"] = name, ["path"] = path, ["description"] = description, ["tags"] = Node(tags) }, ct);
+
+    [McpServerTool(Name = "cad_import_block", Destructive = false)]
+    [Description("Define a library block (or any DWG file) as a block in the current drawing, so cad_create insert can place it. "
+        + "Does nothing if the drawing already has the block unless replace:true (redefines it and updates every existing reference).")]
+    public Task<string> ImportBlock(
+        [Description("Asset name in the library (also the block name to create)")] string? name = null,
+        [Description("DWG file path instead of a library name")] string? path = null,
+        [Description("Redefine an existing block of the same name")] bool replace = false,
+        [Description("Only report what would happen")] bool dry_run = false,
+        CancellationToken ct = default) =>
+        Call("import_block", new JsonObject { ["name"] = name, ["path"] = path, ["replace"] = replace, ["dry_run"] = dry_run }, ct);
+
+    [McpServerTool(Name = "cad_block_library", ReadOnly = true, Idempotent = true)]
+    [Description("List reusable block assets in the block library (name, path, description, tags, size, texts, source drawing).")]
+    public string BlockLibraryList() =>
+        new JsonObject { ["library"] = PowerCad.Core.Model.BlockLibrary.Directory, ["assets"] = PowerCad.Core.Model.BlockLibrary.List() }
+            .ToJsonString(new System.Text.Json.JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+    [McpServerTool(Name = "cad_export_hatch_pattern", Idempotent = true)]
+    [Description("Register a hatch's pattern with AutoCAD: rebuilds the .pat definition from a hatch in the drawing "
+        + "(e.g. a custom pattern like KHAT47 whose .pat file is missing) and writes <name>.pat into AutoCAD's user Support "
+        + "folder, so cad_create hatch and the HATCH command can use it by name in any drawing. The drawing is not changed.")]
+    public Task<string> ExportHatchPattern(
+        [Description("Handle of a hatch that uses the pattern")] string handle,
+        [Description("Pattern name to register (default: the hatch's pattern name)")] string? name = null,
+        [Description("Description after the name in the .pat header")] string? description = null,
+        [Description("Folder to write to (default: AutoCAD user Support folder)")] string? folder = null,
+        [Description("Replace an existing .pat of the same name")] bool overwrite = false,
+        CancellationToken ct = default) =>
+        Call("export_hatch_pattern", new JsonObject { ["handle"] = handle, ["name"] = name, ["description"] = description, ["folder"] = folder, ["overwrite"] = overwrite }, ct);
+
     [McpServerTool(Name = "cad_layers", ReadOnly = true, Idempotent = true)]
     [Description("List layers with color, linetype, lineweight, on/frozen/locked/plot state and which one is current.")]
     public Task<string> Layers([Description("Only these layer names")] string[]? names = null, CancellationToken ct = default) =>

@@ -150,13 +150,43 @@ public sealed record CreateSpec(string Type, string? Layer)
                     Rotation = p.OptNumber("angle") ?? 0,
                 };
                 break;
+            case "leader":
+                // points[0] is the arrow tip; the last point is where the note text goes (add it as text/mtext)
+                Allow(p, "points", "style", "arrow");
+                spec = new CreateSpec(EntityTypes.Leader, layer)
+                {
+                    Points = ParsePoints(node, "points", 2),
+                    Style = p.OptString("style"),
+                    BlockName = NormalizeArrow(p.OptString("arrow")),
+                };
+                break;
             default:
                 throw CadException.Invalid(
                     $"Unknown entity type '{type}'.",
-                    "Use line, polyline, circle, arc, text, mtext, insert, point, dimension or hatch.");
+                    "Use line, polyline, circle, arc, text, mtext, insert, point, dimension, hatch or leader.");
         }
 
         return spec with { Appearance = look };
+    }
+
+    /// <summary>
+    /// Leader arrowhead: "" = the dimension style's arrow, "none" = no arrowhead, otherwise an arrow block
+    /// name such as _DOT, _DOTSMALL, _OPEN30 (a leading underscore is added when missing).
+    /// </summary>
+    public static string NormalizeArrow(string? arrow)
+    {
+        var a = (arrow ?? "").Trim();
+        if (a.Length == 0 || a.Equals("default", StringComparison.OrdinalIgnoreCase) || a.Equals("closedfilled", StringComparison.OrdinalIgnoreCase))
+        {
+            return "";
+        }
+
+        if (a.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return "none";
+        }
+
+        return (a.StartsWith('_') ? a : "_" + a).ToUpperInvariant();
     }
 
     private static void Allow(Params p, params string[] names) => p.AllowOnly([.. Common, .. names]);
@@ -279,7 +309,10 @@ public sealed record CreateSpec(string Type, string? Layer)
                 && (Style is null || string.Equals(s.Props["style"]?.GetValue<string>(), Style, StringComparison.OrdinalIgnoreCase))
                 && (TextOverride is null || s.Props["text_override"]?.GetValue<string>() == TextOverride),
             EntityTypes.Hatch => string.Equals(s.Props["pattern"]?.GetValue<string>(), Pattern, StringComparison.OrdinalIgnoreCase)
-                && PointsMatch(s, Points),
+                && LoopMatches(s, Points),
+            EntityTypes.Leader => PointsMatch(s, Points)
+                && (Style is null || string.Equals(s.Props["style"]?.GetValue<string>(), Style, StringComparison.OrdinalIgnoreCase))
+                && string.Equals(s.Props["arrow"]?.GetValue<string>() ?? "", BlockName, StringComparison.OrdinalIgnoreCase),
             _ => false,
         };
     }
@@ -297,6 +330,38 @@ public sealed record CreateSpec(string Type, string? Layer)
     private static bool PointsMatch(EntityState s, IReadOnlyList<Vec3> points) =>
         s.Props["points"] is JsonArray arr && arr.Count == points.Count
         && arr.Select((x, i) => Vec3.FromJson(x, "p").IsClose(points[i], 1e-4)).All(ok => ok);
+
+    /// <summary>
+    /// A hatch loop is the same closed shape whatever vertex AutoCAD starts it at and whichever way it
+    /// runs: EvaluateHatch may rotate the start point and reverse the direction of the boundary.
+    /// </summary>
+    public static bool LoopMatches(EntityState s, IReadOnlyList<Vec3> points)
+    {
+        if (s.Props["points"] is not JsonArray arr || arr.Count != points.Count || points.Count == 0)
+        {
+            return false;
+        }
+
+        var got = arr.Select(x => Vec3.FromJson(x, "p")).ToList();
+        var n = got.Count;
+        for (var shift = 0; shift < n; shift++)
+        {
+            var forward = true;
+            var backward = true;
+            for (var i = 0; i < n && (forward || backward); i++)
+            {
+                forward &= got[(shift + i) % n].IsClose(points[i], 1e-4);
+                backward &= got[(shift - i + n) % n].IsClose(points[i], 1e-4);
+            }
+
+            if (forward || backward)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool Close(Vec3? a, Vec3 b) => a is { } v && v.IsClose(b, 1e-4);
 

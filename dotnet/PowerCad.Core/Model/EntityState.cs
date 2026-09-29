@@ -45,7 +45,7 @@ public sealed record EntityState(string Handle, string Type, string Layer, JsonO
     {
         EntityTypes.Line => Point("start"),
         EntityTypes.Circle or EntityTypes.Arc => Point("center"),
-        EntityTypes.Polyline or EntityTypes.Hatch => Props["points"] is JsonArray { Count: > 0 } pts ? Vec3.FromJson(pts[0], "points[0]") : null,
+        EntityTypes.Polyline or EntityTypes.Hatch or EntityTypes.Leader => Props["points"] is JsonArray { Count: > 0 } pts ? Vec3.FromJson(pts[0], "points[0]") : null,
         EntityTypes.Dimension => Point("xline1"),
         EntityTypes.Text or EntityTypes.MText => Point("alignment_point") ?? Point("position"),
         _ => Point("position"),
@@ -64,6 +64,7 @@ public static class EntityTypes
     public const string Point = "POINT";
     public const string Dimension = "DIMENSION";
     public const string Hatch = "HATCH";
+    public const string Leader = "LEADER";
 
     public static readonly string[] TextLike = [Text, MText];
 }

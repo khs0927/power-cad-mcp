@@ -148,6 +148,10 @@ internal sealed partial class AcadTransaction(Database db, Transaction tr) : ICa
                 type = EntityTypes.Insert;
                 DescribeInsert(br, props);
                 break;
+            case Leader ld:
+                type = EntityTypes.Leader;
+                DescribeLeader(ld, props);
+                break;
             case DBPoint pt:
                 type = EntityTypes.Point;
                 props["position"] = P(pt.Position);
@@ -339,6 +343,11 @@ internal sealed partial class AcadTransaction(Database db, Transaction tr) : ICa
         if (spec.Type == EntityTypes.Hatch)
         {
             return CreateHatch(ms, spec);
+        }
+
+        if (spec.Type == EntityTypes.Leader)
+        {
+            return CreateLeader(ms, spec);
         }
 
         Entity ent = spec.Type switch

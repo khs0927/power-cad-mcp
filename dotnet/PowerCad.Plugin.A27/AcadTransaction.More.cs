@@ -198,9 +198,20 @@ internal sealed partial class AcadTransaction
         if (h.NumberOfLoops > 0)
         {
             var loop = h.GetLoopAt(0);
+            List<Vec3>? pts = null;
             if (loop.IsPolyline)
             {
-                var pts = loop.Polyline.Cast<BulgeVertex>().Select(bv => new Vec3(bv.Vertex.X, bv.Vertex.Y, h.Elevation)).ToList();
+                pts = loop.Polyline.Cast<BulgeVertex>().Select(bv => new Vec3(bv.Vertex.X, bv.Vertex.Y, h.Elevation)).ToList();
+            }
+            else if (loop.Curves is { Count: > 0 } curves)
+            {
+                // loops built from a boundary entity (CreateHatch) come back as edge curves, not a polyline
+                pts = curves.Cast<Autodesk.AutoCAD.Geometry.Curve2d>()
+                    .Select(c => new Vec3(c.StartPoint.X, c.StartPoint.Y, h.Elevation)).ToList();
+            }
+
+            if (pts is not null)
+            {
                 if (pts.Count > 1 && pts[0].IsClose(pts[^1]))
                 {
                     pts.RemoveAt(pts.Count - 1);
@@ -270,19 +281,28 @@ internal sealed partial class AcadTransaction
         tr.AddNewlyCreatedDBObject(h, true);
         Step("hatch pattern", () =>
         {
-            try
+            // acad.pat/acadiso.pat patterns first, then a custom <name>.pat on the support path (e.g. KHAT47)
+            foreach (var kind in new[] { HatchPatternType.PreDefined, HatchPatternType.CustomDefined })
             {
-                // scale/angle are rejected (eInvalidInput) while the hatch has no pattern yet; set the
-                // pattern first, then scale/angle, then set it again so the definition picks them up
-                h.SetHatchPattern(HatchPatternType.PreDefined, spec.Pattern);
-                h.PatternAngle = spec.Rotation / Deg;
-                h.PatternScale = spec.Scale;
-                h.SetHatchPattern(HatchPatternType.PreDefined, spec.Pattern);
+                try
+                {
+                    // scale/angle are rejected (eInvalidInput) while the hatch has no pattern yet; set the
+                    // pattern first, then scale/angle, then set it again so the definition picks them up
+                    h.SetHatchPattern(kind, spec.Pattern);
+                    h.PatternAngle = spec.Rotation / Deg;
+                    h.PatternScale = spec.Scale;
+                    h.SetHatchPattern(kind, spec.Pattern);
+                    return;
+                }
+                catch (Autodesk.AutoCAD.Runtime.Exception)
+                {
+                    // try the next pattern source
+                }
             }
-            catch (Autodesk.AutoCAD.Runtime.Exception)
-            {
-                throw CadException.Invalid($"Unknown hatch pattern '{spec.Pattern}'.", "Use SOLID or a pattern from acad.pat/acadiso.pat (ANSI31, AR-CONC, AR-SAND, NET, ...).");
-            }
+
+            throw CadException.Invalid(
+                $"Unknown hatch pattern '{spec.Pattern}'.",
+                "Use SOLID, a pattern from acad.pat/acadiso.pat (ANSI31, ANSI37, AR-CONC, AR-SAND, NET, ...), or put <name>.pat on the AutoCAD support path.");
         });
         Step("hatch boundary", () =>
         {
@@ -292,6 +312,65 @@ internal sealed partial class AcadTransaction
         });
         boundary.Erase();
         return h.Handle.ToString();
+    }
+
+    private void DescribeLeader(Leader ld, JsonObject props)
+    {
+        var pts = new JsonArray();
+        for (var i = 0; i < ld.NumVertices; i++)
+        {
+            pts.Add(P(ld.VertexAt(i)));
+        }
+
+        props["points"] = pts;
+        props["style"] = SymbolName(ld.DimensionStyle);
+        props["arrow"] = !ld.HasArrowHead ? "none" : ld.Dimldrblk.IsNull ? "" : SymbolName(ld.Dimldrblk).ToUpperInvariant();
+    }
+
+    private string CreateLeader(BlockTableRecord ms, CreateSpec spec)
+    {
+        var ld = new Leader();
+        ld.SetDatabaseDefaults(db);
+        for (var i = 0; i < spec.Points.Count; i++)
+        {
+            ld.AppendVertex(Pt(spec.Points[i]));
+        }
+
+        if (spec.Style is { } name)
+        {
+            var dst = (DimStyleTable)tr.GetObject(db.DimStyleTableId, OpenMode.ForRead);
+            ld.DimensionStyle = dst.Has(name) ? dst[name] : throw new CadException(ErrorCodes.NotFound, $"Dimension style '{name}' does not exist.", "List styles with cad_inspect sections:[\"dim_styles\"].");
+        }
+
+        if (spec.Layer is { } layer)
+        {
+            EnsureLayer(layer);
+            ld.Layer = layer;
+        }
+
+        ApplyAppearance(ld, spec.Appearance);
+        ms.AppendEntity(ld);
+        tr.AddNewlyCreatedDBObject(ld, true);
+        Step("leader arrow", () =>
+        {
+            if (spec.BlockName == "none")
+            {
+                ld.HasArrowHead = false;
+            }
+            else if (spec.BlockName.Length > 0)
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                if (!bt.Has(spec.BlockName))
+                {
+                    throw new CadException(ErrorCodes.NotFound, $"Arrow block '{spec.BlockName}' is not in this drawing.", "Use an arrow block the drawing already has (see cad_inspect blocks, e.g. _DOT), 'none', or omit arrow.");
+                }
+
+                ld.Dimldrblk = bt[spec.BlockName];
+            }
+
+            // no EvaluateLeader(): it throws eNotApplicable for a leader without an annotation object
+        });
+        return ld.Handle.ToString();
     }
 
     /// <summary>Runs one AutoCAD API step and names it in the error, so failures are diagnosable.</summary>
@@ -581,6 +660,158 @@ internal sealed partial class AcadTransaction
         {
             db.Clayer = rec.ObjectId;
         }
+    }
+
+    // -------------------------------------------------------- hatch patterns
+    public JsonObject HatchPattern(string handle)
+    {
+        if (Open(handle, OpenMode.ForRead) is not Hatch h)
+        {
+            throw new CadException(ErrorCodes.Unsupported, $"Entity {handle} is not a hatch.");
+        }
+
+        var lines = new JsonArray();
+        for (var i = 0; i < h.NumberOfPatternDefinitions; i++)
+        {
+            var d = h.GetPatternDefinitionAt(i);
+            var line = new JsonObject
+            {
+                ["angle"] = d.Angle * Deg,
+                ["base"] = new JsonArray(d.BaseX, d.BaseY),
+                ["offset"] = new JsonArray(d.OffsetX, d.OffsetY),
+            };
+            if (d.GetDashes() is { Count: > 0 } dashes)
+            {
+                line["dashes"] = new JsonArray(dashes.Cast<double>().Select(x => (JsonNode)x).ToArray());
+            }
+
+            lines.Add(line);
+        }
+
+        string? support = null;
+        try
+        {
+            if (Autodesk.AutoCAD.ApplicationServices.Core.Application.GetSystemVariable("ROAMABLEROOTPREFIX") is string root && root.Length > 0)
+            {
+                support = Path.Combine(root, "Support");
+            }
+        }
+        catch (Autodesk.AutoCAD.Runtime.Exception)
+        {
+            // leave it to the caller's folder
+        }
+
+        return new JsonObject
+        {
+            ["name"] = h.PatternName,
+            ["type"] = h.PatternType switch
+            {
+                HatchPatternType.PreDefined => h.PatternName.Equals("SOLID", StringComparison.OrdinalIgnoreCase) ? "solid" : "predefined",
+                HatchPatternType.CustomDefined => "custom",
+                _ => "user",
+            },
+            ["scale"] = h.PatternScale,
+            ["angle"] = h.PatternAngle * Deg,
+            ["double"] = h.PatternDouble,
+            ["lines"] = lines,
+            ["support_dir"] = support,
+        };
+    }
+
+    // ---------------------------------------------------------- block assets
+    public JsonObject ExportBlock(string name, string path)
+    {
+        var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+        var btr = (BlockTableRecord)tr.GetObject(bt[name], OpenMode.ForRead);
+        var ids = new ObjectIdCollection();
+        var texts = new JsonArray();
+        Extents3d? ext = null;
+        foreach (ObjectId id in btr)
+        {
+            if (tr.GetObject(id, OpenMode.ForRead) is not Entity e)
+            {
+                continue;
+            }
+
+            ids.Add(id);
+            switch (e)
+            {
+                case DBText t when !string.IsNullOrWhiteSpace(t.TextString):
+                    texts.Add(new JsonObject { ["text"] = t.TextString, ["position"] = P(t.Position), ["height"] = CadJson.Round(t.Height), ["layer"] = t.Layer });
+                    break;
+                case MText m when !string.IsNullOrWhiteSpace(m.Text):
+                    texts.Add(new JsonObject { ["text"] = m.Text, ["position"] = P(m.Location), ["height"] = CadJson.Round(m.TextHeight), ["layer"] = m.Layer });
+                    break;
+            }
+
+            if (e is not AttributeDefinition && SafeBounds(e) is { } b)
+            {
+                if (ext is { } x)
+                {
+                    x.AddExtents(b);
+                    ext = x;
+                }
+                else
+                {
+                    ext = b;
+                }
+            }
+        }
+
+        if (ids.Count == 0)
+        {
+            throw new CadException(ErrorCodes.Unsupported, $"Block '{name}' is empty.");
+        }
+
+        // Clone the definition's entities into a new drawing's model space; the block base point becomes
+        // the origin, so inserting the file as a block reproduces the original definition.
+        using (var outDb = new Database(true, true))
+        {
+            var mapping = new IdMapping();
+            db.WblockCloneObjects(ids, outDb.CurrentSpaceId, mapping, DuplicateRecordCloning.Ignore, false);
+            outDb.Insunits = db.Insunits;
+            outDb.Insbase = btr.Origin;
+            outDb.SaveAs(path, DwgVersion.Current);
+        }
+
+        var card = new JsonObject
+        {
+            ["units"] = db.Insunits.ToString(),
+            ["base_point"] = P(btr.Origin),
+            ["entity_count"] = ids.Count,
+            ["attributes"] = new JsonArray(ids.Cast<ObjectId>().Select(i => tr.GetObject(i, OpenMode.ForRead)).OfType<AttributeDefinition>().Select(a => (JsonNode)a.Tag).ToArray()),
+            ["texts"] = texts,
+        };
+        if (ext is { } r)
+        {
+            card["extents"] = new JsonArray(P(r.MinPoint), P(r.MaxPoint));
+            card["size"] = new JsonArray(CadJson.Round(r.MaxPoint.X - r.MinPoint.X), CadJson.Round(r.MaxPoint.Y - r.MinPoint.Y));
+        }
+
+        return card;
+    }
+
+    public void ImportBlock(string path, string name, bool replace)
+    {
+        using var src = new Database(false, true);
+        try
+        {
+            src.ReadDwgFile(path, FileOpenMode.OpenForReadAndAllShare, true, "");
+            src.CloseInput(true);
+        }
+        catch (Autodesk.AutoCAD.Runtime.Exception e)
+        {
+            throw new CadException(ErrorCodes.InvalidParams, $"Cannot read '{path}' as a DWG ({e.ErrorStatus}).");
+        }
+
+        var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+        if (bt.Has(name) && !replace)
+        {
+            return;
+        }
+
+        // Database.Insert makes (or redefines) a block from the whole source drawing, base point = INSBASE.
+        Step("block import", () => db.Insert(name, src, true));
     }
 
     // ------------------------------------------------------------- resources

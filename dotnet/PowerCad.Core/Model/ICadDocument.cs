@@ -65,6 +65,22 @@ public interface ICadTransaction
     /// <summary>Drawing resources: units, current settings, text/dim styles, linetypes, blocks, extents.</summary>
     JsonObject Inspect();
 
+    /// <summary>
+    /// Writes a block definition to a standalone DWG (its contents in model space, block base point at the
+    /// origin) and returns what was exported: extents, entity_count, texts.
+    /// </summary>
+    JsonObject ExportBlock(string name, string path);
+
+    /// <summary>Defines (or, with <paramref name="replace"/>, redefines) block <paramref name="name"/> from a DWG file.</summary>
+    void ImportBlock(string path, string name, bool replace);
+
+    /// <summary>
+    /// A hatch's pattern as evaluated in the drawing: name, type, scale, angle and its lines (angle in
+    /// degrees, base, offset vector, dashes - all in drawing units), plus "support_dir" (AutoCAD's user
+    /// Support folder, where .pat files are found by name).
+    /// </summary>
+    JsonObject HatchPattern(string handle);
+
     /// <summary>True when the named resource exists. kind: text_style, dim_style, linetype, layer.</summary>
     bool ResourceExists(string kind, string name);
 }

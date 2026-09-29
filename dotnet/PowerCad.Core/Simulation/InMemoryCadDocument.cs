@@ -373,6 +373,11 @@ public sealed class InMemoryCadDocument : ICadDocument
                     props["points"] = new JsonArray(spec.Points.Select(p => (JsonNode)p.ToJson()).ToArray());
                     props["area"] = CadJson.Round(Area(spec.Points));
                     break;
+                case EntityTypes.Leader:
+                    props["points"] = new JsonArray(spec.Points.Select(p => (JsonNode)p.ToJson()).ToArray());
+                    props["style"] = spec.Style ?? "ISO-25";
+                    props["arrow"] = spec.BlockName;
+                    break;
                 case EntityTypes.Insert:
                     var def = store.Blocks.TryGetValue(spec.BlockName, out var d)
                         ? d
@@ -708,6 +713,57 @@ public sealed class InMemoryCadDocument : ICadDocument
             ["layer_count"] = store.Layers.Count,
             ["entity_count"] = store.Entities.Count,
         };
+
+        public JsonObject ExportBlock(string name, string path)
+        {
+            var def = store.Blocks[name];
+            var file = new JsonObject
+            {
+                ["simulated_block"] = name,
+                ["width"] = def.Width,
+                ["dynamic"] = new JsonObject(def.Dynamic.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value)))),
+                ["attributes"] = new JsonObject(def.Attributes.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)JsonValue.Create(kv.Value)))),
+            };
+            File.WriteAllText(path, file.ToJsonString());
+            return new JsonObject { ["width"] = def.Width, ["entity_count"] = 1, ["texts"] = new JsonArray() };
+        }
+
+        public void ImportBlock(string path, string name, bool replace)
+        {
+            var file = JsonNode.Parse(File.ReadAllText(path)) as JsonObject
+                ?? throw new CadException(ErrorCodes.InvalidParams, $"'{path}' is not a simulated block file.");
+            store.Blocks[name] = new BlockDef(
+                file["width"]!.GetValue<double>(),
+                file["dynamic"]!.AsObject().ToDictionary(kv => kv.Key, kv => kv.Value!.GetValue<double>()),
+                file["attributes"]!.AsObject().ToDictionary(kv => kv.Key, kv => kv.Value!.GetValue<string>()));
+        }
+
+        public JsonObject HatchPattern(string handle)
+        {
+            var e = Read(handle);
+            if (e.Type != EntityTypes.Hatch)
+            {
+                throw new CadException(ErrorCodes.Unsupported, $"Entity {handle} is not a hatch.");
+            }
+
+            // the simulator only knows ANSI31: one 45 degree line family, 3.175 apart
+            var scale = e.Number("scale") ?? 1;
+            var angle = (e.Number("angle") ?? 0) + 45;
+            var r = angle * Math.PI / 180;
+            return new JsonObject
+            {
+                ["name"] = e.Props["pattern"]!.GetValue<string>(),
+                ["type"] = "predefined",
+                ["scale"] = scale,
+                ["angle"] = e.Number("angle") ?? 0,
+                ["lines"] = new JsonArray(new JsonObject
+                {
+                    ["angle"] = angle,
+                    ["base"] = new JsonArray(0.0, 0.0),
+                    ["offset"] = new JsonArray(-Math.Sin(r) * 3.175 * scale, Math.Cos(r) * 3.175 * scale),
+                }),
+            };
+        }
 
         public bool ResourceExists(string kind, string name) => kind switch
         {

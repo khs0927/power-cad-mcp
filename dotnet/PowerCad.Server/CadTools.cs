@@ -189,7 +189,8 @@ public sealed partial class CadTools(ICadGateway gateway)
         + "text{text,position,height?,rotation?,justify? (left|center|right|middle|TL..BR; position is then the alignment point),style?,width_factor?}; "
         + "mtext{text,position,height?,width?,rotation?,justify? (TL..BR),style?}; insert{name,position,rotation?,scale?}; point{position}; "
         + "dimension{kind: rotated|aligned, p1, p2, line_point | offset, rotation? (rotated: 0 horizontal, 90 vertical), style? (dim style), text? (override)}; "
-        + "hatch{points (closed loop), pattern? (SOLID, ANSI31, AR-CONC...), scale?, angle?}. "
+        + "hatch{points (closed loop), pattern? (SOLID, ANSI31, AR-CONC...), scale?, angle?}; "
+        + "leader{points (points[0] = arrow tip, last = landing where the note text goes), style? (dim style: arrow size), arrow? (default | none | _DOT, _DOTSMALL, _OPEN30 ... arrow block)} - add the note as a separate text/mtext at the landing. "
         + "color: ACI 1-255 | bylayer | byblock | red.. | #rrggbb; lineweight: mm (0.25) | bylayer | byblock | default.")]
     public Task<string> Create(
         [Description("Entities to create (max 200)")] JsonElement entities,

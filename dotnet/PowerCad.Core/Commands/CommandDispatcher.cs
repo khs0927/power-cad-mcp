@@ -22,11 +22,12 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
     [
         "status", "query", "get", "inspect", "layers", "zoom", "snapshot",
         "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer", "batch",
+        "export_block", "import_block", "export_hatch_pattern",
     ];
 
     /// <summary>Commands that change the drawing (refused in read-only mode).</summary>
     public static readonly IReadOnlySet<string> Mutating = new HashSet<string>(
-        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer", "batch"]);
+        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "set_layer", "batch", "import_block"]);
 
     /// <summary>Commands that may appear as batch steps.</summary>
     private static readonly HashSet<string> Batchable =
@@ -51,6 +52,9 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
             "snapshot" => View(p, snapshot: true),
             _ when Batchable.Contains(command) => RunChange(p, (s, q) => Apply(command, s, q)),
             "batch" => RunChange(p, Batch),
+            "export_block" => document.Execute(tx => ExportBlock(tx, p), commit: false),
+            "import_block" => ImportBlock(p),
+            "export_hatch_pattern" => document.Execute(tx => ExportHatchPattern(tx, p), commit: false),
             _ => throw new CadException(ErrorCodes.UnknownCommand, $"Unknown command '{command}'.", $"Known: {string.Join(", ", Commands)}."),
         };
     }
@@ -115,6 +119,127 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
             default:
                 throw new CadException(ErrorCodes.UnknownCommand, $"'{command}' cannot run inside a batch.");
         }
+    }
+
+    // ----------------------------------------------------------- block assets
+    private JsonObject ExportBlock(ICadTransaction tx, Params p)
+    {
+        p.AllowOnly("name", "path", "description", "tags");
+        var name = p.String("name");
+        if (!tx.BlockExists(name))
+        {
+            throw new CadException(ErrorCodes.NotFound, $"Block '{name}' is not defined in this drawing.", "List blocks with cad_inspect sections:[\"blocks\"].");
+        }
+
+        var path = BlockLibrary.Resolve(name, p.OptString("path"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var card = tx.ExportBlock(name, path);
+        card["name"] = name;
+        card["path"] = path;
+        card["source_drawing"] = document.Describe()["document"]?.DeepClone();
+        card["exported_at"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+        if (p.OptString("description") is { } d)
+        {
+            card["description"] = d;
+        }
+
+        if (p.Strings("tags") is { Count: > 0 } tags)
+        {
+            card["tags"] = new JsonArray(tags.Select(t => (JsonNode)t).ToArray());
+        }
+
+        BlockLibrary.WriteCard(path, card);
+        return card;
+    }
+
+    /// <summary>Rebuilds a hatch's pattern as a .pat file (default: AutoCAD's user Support folder).</summary>
+    private static JsonObject ExportHatchPattern(ICadTransaction tx, Params p)
+    {
+        p.AllowOnly("handle", "name", "description", "folder", "overwrite");
+        var info = tx.HatchPattern(p.String("handle"));
+        var source = info["name"]!.GetValue<string>();
+        if (info["type"]?.GetValue<string>() == "solid" || source.Equals("SOLID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CadException(ErrorCodes.Unsupported, "SOLID fills have no pattern lines to export.");
+        }
+
+        var name = p.OptString("name") ?? source;
+        if (name.Length == 0 || name.Any(c => !(char.IsLetterOrDigit(c) || c is '_' or '-')))
+        {
+            throw CadException.Invalid($"Pattern name '{name}' must be letters, digits, '_' or '-'.");
+        }
+
+        var folder = p.OptString("folder") ?? info["support_dir"]?.GetValue<string>()
+            ?? throw CadException.Invalid("No AutoCAD Support folder known; pass 'folder'.");
+        var path = Path.Combine(folder, name + ".pat");
+        var text = PatFile.Build(name, p.OptString("description") ?? $"from {source}", info["scale"]!.GetValue<double>(), info["angle"]!.GetValue<double>(), info["lines"]!.AsArray());
+        var exists = File.Exists(path);
+        if (exists && !p.Bool("overwrite"))
+        {
+            throw new CadException(ErrorCodes.InvalidParams, $"'{path}' already exists.", "Pass overwrite:true to replace it, or choose another name.");
+        }
+
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(path, text + "\r\n", new System.Text.UTF8Encoding(false));
+        return new JsonObject
+        {
+            ["pattern"] = name,
+            ["source_pattern"] = source,
+            ["path"] = path,
+            ["replaced"] = exists,
+            ["line_count"] = info["lines"]!.AsArray().Count,
+            ["pat"] = text,
+            ["hint"] = $"Use it with cad_create hatch pattern:\"{name}\". AutoCAD finds it by name on the support path.",
+        };
+    }
+
+    private JsonObject ImportBlock(Params p)
+    {
+        p.AllowOnly("name", "path", "replace", "dry_run");
+        var name = p.OptString("name");
+        var given = p.OptString("path");
+        if (name is null && given is null)
+        {
+            throw CadException.Invalid("Give 'name' (library asset) or 'path' (DWG file).");
+        }
+
+        var path = BlockLibrary.Resolve(name ?? Path.GetFileNameWithoutExtension(given!), given);
+        name ??= Path.GetFileNameWithoutExtension(path);
+        if (!File.Exists(path))
+        {
+            throw new CadException(ErrorCodes.NotFound, $"Block file '{path}' does not exist.", "List assets with cad_block_library, or export one with cad_export_block.");
+        }
+
+        var replace = p.Bool("replace");
+        var dryRun = p.Bool("dry_run");
+        var existed = document.Execute(tx => tx.BlockExists(name), commit: false);
+        var result = new JsonObject { ["name"] = name, ["path"] = path, ["already_defined"] = existed, ["dry_run"] = dryRun };
+        if (existed && !replace)
+        {
+            result["imported"] = false;
+            result["note"] = "The drawing already has this block; nothing changed. Pass replace:true to redefine it.";
+            return result;
+        }
+
+        if (dryRun)
+        {
+            result["imported"] = false;
+            result["note"] = existed ? "Would redefine the existing block." : "Would define the block.";
+            return result;
+        }
+
+        document.Execute(
+            tx =>
+            {
+                tx.ImportBlock(path, name, replace);
+                return tx.BlockExists(name)
+                    ? true
+                    : throw new CadException(ErrorCodes.VerifyFailed, $"Block '{name}' is still missing after the import.");
+            },
+            commit: true);
+        result["imported"] = true;
+        result["hint"] = "Place it with cad_create {type:\"insert\", name, position}.";
+        return result;
     }
 
     // ------------------------------------------------------------------ reads

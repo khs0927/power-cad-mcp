@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using PowerCad.Core;
 using PowerCad.Core.Commands;
+using PowerCad.Core.Model;
 using PowerCad.Core.Simulation;
 using Xunit;
 
@@ -33,6 +34,104 @@ public sealed class NewCommandTests
     private JsonObject Created(string entity) => Run("create", $$"""{"entities":[{{entity}}]}""")["created"]![0]!.AsObject();
 
     // ------------------------------------------------------------------ create
+    [Fact]
+    public void Hatch_loop_matches_regardless_of_start_vertex_and_direction()
+    {
+        var want = new[] { new Vec3(0, 0, 0), new Vec3(100, 0, 0), new Vec3(100, 50, 0), new Vec3(0, 50, 0) };
+        EntityState Loop(string pts) => new("1", "HATCH", "HAT", new JsonObject { ["points"] = JsonNode.Parse(pts) });
+
+        Assert.True(CreateSpec.LoopMatches(Loop("[[100,0,0],[100,50,0],[0,50,0],[0,0,0]]"), want)); // rotated start
+        Assert.True(CreateSpec.LoopMatches(Loop("[[0,0,0],[0,50,0],[100,50,0],[100,0,0]]"), want)); // reversed
+        Assert.True(CreateSpec.LoopMatches(Loop("[[0,50,0],[100,50,0],[100,0,0],[0,0,0]]"), want)); // both
+        Assert.False(CreateSpec.LoopMatches(Loop("[[0,0,0],[100,0,0],[0,50,0],[100,50,0]]"), want)); // different shape
+        Assert.False(CreateSpec.LoopMatches(Loop("[[0,0,0],[100,0,0],[100,50,0]]"), want)); // different count
+    }
+
+    [Fact]
+    public void Exports_a_block_to_the_library_and_imports_it_into_another_drawing()
+    {
+        var lib = Path.Combine(Path.GetTempPath(), "powercad-lib-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("POWER_CAD_BLOCK_LIBRARY", lib);
+        try
+        {
+            var block = Run("inspect")["blocks"]!.AsArray()[0]!["name"]!.GetValue<string>();
+            var card = Run("export_block", $$"""{"name":"{{block}}","description":"test","tags":["t"]}""");
+            Assert.True(File.Exists(card["path"]!.GetValue<string>()));
+            Assert.True(File.Exists(Path.ChangeExtension(card["path"]!.GetValue<string>(), ".json")));
+            Assert.Single(BlockLibrary.List());
+
+            var other = new CommandDispatcher(InMemoryCadDocument.CreateSample());
+            var again = (JsonObject)other.Execute("import_block", JsonNode.Parse($$"""{"name":"{{block}}"}""") as JsonObject);
+            Assert.False(again["imported"]!.GetValue<bool>()); // the sample already defines it
+
+            var renamed = (JsonObject)other.Execute("import_block", JsonNode.Parse($$"""{"path":"{{card["path"]!.GetValue<string>().Replace("\\", "\\\\")}}","replace":true}""") as JsonObject);
+            Assert.True(renamed["imported"]!.GetValue<bool>());
+
+            Fails("export_block", """{"name":"NO_SUCH_BLOCK"}""");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("POWER_CAD_BLOCK_LIBRARY", null);
+            if (Directory.Exists(lib))
+            {
+                Directory.Delete(lib, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(10, 0)]
+    [InlineData(400, 45)]
+    [InlineData(2.5, 30)]
+    public void Pat_file_undoes_hatch_scale_and_angle(double scale, double angle)
+    {
+        // ANSI31 as a hatch evaluates it: 45 degree lines 3.175 apart, rotated by the hatch angle and scaled
+        var r = (45 + angle) * Math.PI / 180;
+        var lines = new JsonArray(new JsonObject
+        {
+            ["angle"] = 45 + angle,
+            ["base"] = new JsonArray(0.0, 0.0),
+            ["offset"] = new JsonArray(-Math.Sin(r) * 3.175 * scale, Math.Cos(r) * 3.175 * scale),
+        });
+        var pat = PatFile.Build("ansi31x", "test", scale, angle, lines);
+        Assert.Equal("*ANSI31X, test\r\n45, 0, 0, 0, 3.175\r\n", pat);
+    }
+
+    [Fact]
+    public void Exports_a_hatch_pattern_to_a_pat_file()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "powercad-pat-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var hatch = Created("""{"type":"hatch","points":[[0,0],[100,0],[100,50],[0,50]],"pattern":"ANSI31","scale":20,"angle":15}""");
+            var folder = dir.Replace("\\", "\\\\");
+            var res = Run("export_hatch_pattern", $$"""{"handle":"{{H(hatch)}}","name":"KHAT_TEST","folder":"{{folder}}"}""");
+            Assert.Equal("*KHAT_TEST, from ANSI31\r\n45, 0, 0, 0, 3.175\r\n", File.ReadAllText(res["path"]!.GetValue<string>()).TrimEnd('\r', '\n') + "\r\n");
+            Fails("export_hatch_pattern", $$"""{"handle":"{{H(hatch)}}","name":"KHAT_TEST","folder":"{{folder}}"}"""); // exists
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Creates_leaders_with_arrow_choice()
+    {
+        var dot = Created("""{"type":"leader","layer":"DIMLE","points":[[0,0],[500,500],[1500,500]],"arrow":"dot"}""");
+        Assert.Equal("LEADER", dot["type"]!.GetValue<string>());
+        Assert.Equal("_DOT", dot["arrow"]!.GetValue<string>());
+        Assert.Equal(3, dot["points"]!.AsArray().Count);
+
+        var plain = Created("""{"type":"leader","points":[[0,0],[800,0]],"arrow":"none"}""");
+        Assert.Equal("none", plain["arrow"]!.GetValue<string>());
+
+        Fails("create", """{"entities":[{"type":"leader","points":[[0,0]]}]}""");
+    }
+
     [Fact]
     public void Creates_dimensions_hatches_points_and_styled_text()
     {
