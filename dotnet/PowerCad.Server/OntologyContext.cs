@@ -157,6 +157,93 @@ public sealed class OntologyMcpClient(string? command, string? root, TimeSpan ti
     }
 }
 
+
+public sealed class SionAecClient(HttpClient http, Uri baseUri) : IOntologyContextClient
+{
+    public bool Enabled => true;
+
+    public static SionAecClient FromEnvironment(Func<string, string?> env)
+    {
+        var raw = env("POWER_CAD_SION_URL");
+        if (string.IsNullOrWhiteSpace(raw)
+            || !Uri.TryCreate(raw, UriKind.Absolute, out var baseUri)
+            || baseUri.Scheme is not ("http" or "https")
+            || !string.IsNullOrEmpty(baseUri.UserInfo))
+        {
+            throw new McpException("[SION_CONFIG] POWER_CAD_SION_URL must be an absolute http(s) URL without embedded credentials.");
+        }
+
+        var seconds = 20;
+        if (int.TryParse(env("POWER_CAD_SION_TIMEOUT"), out var parsed) && parsed is >= 1 and <= 120)
+        {
+            seconds = parsed;
+        }
+
+        return new SionAecClient(new HttpClient { Timeout = TimeSpan.FromSeconds(seconds) }, baseUri);
+    }
+
+    public async Task<JsonObject> QueryGlobalMemoryAsync(
+        string question,
+        int topK,
+        string? projectId,
+        CancellationToken ct)
+    {
+        var query = $"question={Uri.EscapeDataString(question)}&top_k={topK}";
+        if (!string.IsNullOrWhiteSpace(projectId))
+        {
+            query += $"&project_id={Uri.EscapeDataString(projectId)}";
+        }
+
+        var endpoint = new Uri(baseUri, $"/api/v1/aec/query?{query}");
+        HttpResponseMessage response;
+        try
+        {
+            response = await http.GetAsync(endpoint, ct).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            throw new McpException($"[SION_UNAVAILABLE] Could not query Sion AEC federation: {e.Message}", e);
+        }
+
+        using (response)
+        {
+            var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new McpException($"[SION_FAILED] Sion AEC federation returned {(int)response.StatusCode}: {text}");
+            }
+
+            JsonObject body;
+            try
+            {
+                body = JsonNode.Parse(text) as JsonObject
+                    ?? throw new JsonException("response was not an object");
+            }
+            catch (JsonException e)
+            {
+                throw new McpException("[SION_FAILED] Sion AEC federation returned invalid JSON.", e);
+            }
+
+            if (body["canonical"]?.GetValue<bool>() is not false
+                || body["read_only"]?.GetValue<bool>() is not true)
+            {
+                throw new McpException("[SION_CONTRACT] Refusing Sion context that is not explicitly advisory/read-only.");
+            }
+
+            return body["result"] as JsonObject
+                ?? throw new McpException("[SION_CONTRACT] Sion AEC federation returned no result object.");
+        }
+    }
+}
+
+public static class ContextClientFactory
+{
+    public static IOntologyContextClient FromEnvironment(Func<string, string?> env) =>
+        string.IsNullOrWhiteSpace(env("POWER_CAD_SION_URL"))
+            ? OntologyMcpClient.FromEnvironment(env)
+            : SionAecClient.FromEnvironment(env);
+}
+
 public sealed record OntologyCandidate(
     int Choice,
     string Handle,
