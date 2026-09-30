@@ -71,7 +71,7 @@ public sealed class ServerTests : IDisposable
                 },
             },
         };
-        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory));
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
 
         var query = Obj(await context.Query("door", max_choices: 5));
         Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
