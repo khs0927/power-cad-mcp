@@ -16,6 +16,8 @@ namespace PowerCad.Plugin;
 /// </summary>
 internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) : ICadDocument
 {
+    private const string UndoGroupName = "POWERCAD_EDIT";
+
     public JsonObject Describe() => invoker.Invoke(
         () =>
         {
@@ -56,7 +58,9 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
             DocumentLockGuard docLock;
             try
             {
-                docLock = new DocumentLockGuard(doc.LockDocument());
+                // A named write lock makes AutoCAD record everything done under it as one undo group
+                // ("POWERCAD_EDIT"), so a single UNDO reverts exactly one request.
+                docLock = new DocumentLockGuard(doc.LockDocument(DocumentLockMode.Write, UndoGroupName, UndoGroupName, false));
             }
             catch (Autodesk.AutoCAD.Runtime.Exception e) when (e.ErrorStatus == ErrorStatus.LockViolation)
             {
