@@ -211,6 +211,9 @@ def census(doc: Drawing, standard: dict[str, Any] | None = None) -> dict[str, An
     for lay in doc.layers:
         name = lay.dxf.name
         status = "standard" if name in std_layers else ("mapped" if name in merge_map else "unmapped")
+        if status == "mapped" and merge_map[name] not in std_layers:
+            # The value is a content rule (e.g. HATCH -> INS or HAT), not a single target layer.
+            status = "conditional"
         layers.append(
             {
                 "name": name,
@@ -358,6 +361,8 @@ def to_markdown(r: dict[str, Any]) -> str:
 
 def load(path: Path) -> Drawing:
     """Read a DXF, or a DWG through the ODA File Converter when it is installed (ezdxf odafc add-on)."""
+    if not path.exists():
+        raise ValueError(f"파일이 없습니다: {path}")
     if path.suffix.lower() == ".dwg":
         from ezdxf.addons import odafc
 

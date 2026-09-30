@@ -16,7 +16,7 @@ def _drawing():
     title.add_lwpolyline([(0, 0), (84000, 0), (84000, 59400), (0, 59400)], close=True)
     title.add_attdef("NO", (70000, 3000), dxfattribs={"height": 300})
     msp = doc.modelspace()
-    for layer in ("구역계", "COL", "수상한레이어"):
+    for layer in ("구역계", "COL", "수상한레이어", "HATCH"):
         doc.layers.add(layer)
     ins = msp.add_blockref(
         "ZIUM_sheet_architect", (0, 0), dxfattribs={"xscale": 0.5, "yscale": 0.5, "layer": "A-FORM"}
@@ -43,6 +43,8 @@ def test_census_accounts_for_every_entity_and_sheet():
     assert [s["a3_scale"] for s in r["sheets"]] == ["1/100", "1/150"]
     assert "model:outside_sheets" in r["buckets"]  # the far-away polyline is not silently dropped
     assert "수상한레이어" in r["unmapped_layers"] and "구역계" not in r["unmapped_layers"]
+    status = {lay["name"]: lay["standard_status"] for lay in r["layers"]}
+    assert status["구역계"] == "mapped" and status["HATCH"] == "conditional"
     assert any(b["type"] == "LEADER" for b in r["blind_spots"])
     assert {"A001", "배 치 도", "T120 비드법보온판"} <= {t["text"] for t in r["texts"]}
     assert r["hatches"][0]["pattern"] == "LINE" and r["hatches"][0]["angle"] == 90
