@@ -27,6 +27,7 @@ ICadGateway gateway = options.Simulate
     ? new SimulatorGateway(InMemoryCadDocument.CreateSample(), options.ReadOnly)
     : new PipeGateway(new DiscoveryStore(options.Home), options.Target, options.ReadOnly);
 builder.Services.AddSingleton(gateway);
+builder.Services.AddSingleton<IOntologyContextClient>(OntologyMcpClient.FromEnvironment(Environment.GetEnvironmentVariable));
 
 builder.Services
     .AddMcpServer(o =>
@@ -35,7 +36,8 @@ builder.Services
         o.ServerInstructions = ServerOptions.Instructions;
     })
     .WithStdioServerTransport()
-    .WithTools<CadTools>();
+    .WithTools<CadTools>()
+    .WithTools<OntologyContextTools>();
 
 await builder.Build().RunAsync();
 return 0;
