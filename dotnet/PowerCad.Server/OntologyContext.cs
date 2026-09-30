@@ -169,11 +169,38 @@ public sealed record OntologyCandidate(
 
 internal sealed record OntologyCandidateSpace(DateTimeOffset CreatedAt, IReadOnlyList<OntologyCandidate> Options);
 
-[McpServerToolType]
-public sealed partial class OntologyContextTools(ICadGateway gateway, IOntologyContextClient ontology)
+public sealed class OntologyCandidateStore
 {
     private static readonly TimeSpan CandidateTtl = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<string, OntologyCandidateSpace> _spaces = new();
+
+    internal string Put(IReadOnlyList<OntologyCandidate> options)
+    {
+        var contextId = candidateStore.Put(options);
+        return contextId;
+    }
+
+    internal bool TryGet(string contextId, out OntologyCandidateSpace? space)
+    {
+        if (!_spaces.TryGetValue(contextId, out var current) || DateTimeOffset.UtcNow - current.CreatedAt > CandidateTtl)
+        {
+            _spaces.TryRemove(contextId, out _);
+            space = null;
+            return false;
+        }
+
+        space = current;
+        return true;
+    }
+
+}
+
+[McpServerToolType]
+public sealed partial class OntologyContextTools(
+    ICadGateway gateway,
+    IOntologyContextClient ontology,
+    OntologyCandidateStore candidateStore)
+{
 
     [GeneratedRegex("^[0-9A-Fa-f]+$")]
     private static partial Regex HandlePattern();
@@ -293,9 +320,8 @@ public sealed partial class OntologyContextTools(ICadGateway gateway, IOntologyC
         [Description("1-based choice number from cad_context_query")] int choice,
         CancellationToken ct = default)
     {
-        if (!_spaces.TryGetValue(context_id, out var space) || DateTimeOffset.UtcNow - space.CreatedAt > CandidateTtl)
+        if (!candidateStore.TryGet(context_id, out var space) || space is null)
         {
-            _spaces.TryRemove(context_id, out _);
             throw new McpException("[CONTEXT_EXPIRED] Candidate context is missing or older than 10 minutes. Run cad_context_query again.");
         }
 
