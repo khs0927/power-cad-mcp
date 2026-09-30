@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -190,7 +189,7 @@ public sealed partial class OntologyContextTools(ICadGateway gateway, IOntologyC
         return part is not null && HandlePattern().IsMatch(part) ? part.ToUpperInvariant() : null;
     }
 
-    private static JsonArray StringArray(string value) => new((JsonNode)value);
+    private static JsonArray StringArray(string value) => new(JsonValue.Create(value));
 
     [McpServerTool(Name = "cad_context_query", ReadOnly = true, Idempotent = false)]
     [Description("Query the external Ontology/CAIR memory, map only CAD-looking geometry refs to handles, then live-verify those handles in the current AutoCAD drawing. Returns a numbered candidate space; it never authorizes a mutation.")]
