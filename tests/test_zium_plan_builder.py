@@ -24,11 +24,11 @@ def test_example_reproduces_the_drawn_test_sheet():
     ents = build()
     assert len(ents) == 194
     c = Counter((e["type"], e["layer"]) for e in ents)
-    assert sum(1 for e in ents if e.get("name") == "BUBBLE") == 6            # top and left only
-    assert c[("polyline", "DEFPOINTS")] == 7       # boundary + 1500 + 5 x 400
+    assert sum(1 for e in ents if e.get("name") == "BUBBLE") == 6  # top and left only
+    assert c[("polyline", "DEFPOINTS")] == 7  # boundary + 1500 + 5 x 400
     assert c[("dimension", "DIM")] == 24
     assert all(e["style"] == "80" for e in ents if e["type"] == "dimension")
-    assert c[("hatch", ".")] == c[("polyline", "COL")]   # one SOLID per concrete mass
+    assert c[("hatch", ".")] == c[("polyline", "COL")]  # one SOLID per concrete mass
 
 
 def test_sheet_origin_moves_everything():
@@ -45,4 +45,4 @@ def test_standard_layers_switch():
 def test_bulge_arc_ends_on_target():
     pts = zpb.arc_points((0, 0), (10, 0), 0.502)
     assert pts[-1] == pytest.approx((10, 0), abs=1e-9)
-    assert pts[2][1] < 0                            # positive bulge = counter-clockwise, below the chord
+    assert pts[2][1] < 0  # positive bulge = counter-clockwise, below the chord
