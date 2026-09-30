@@ -130,9 +130,25 @@ python scripts\smoke_test_autocad.py                         # 새 도면에 테
 | `POWER_CAD_DXF_PATH` | – | DXF 백엔드에서 시작 시 열/저장할 파일 |
 | `POWER_CAD_ALLOW_COMMANDS` | `1` | `0`이면 `run_command` 비활성화 |
 | `POWER_CAD_ALLOW_LISP` | `0` | `1`이면 `run_command`에서 AutoLISP 식 허용(위험 함수는 계속 차단) |
+| `POWER_CAD_ONTOLOGY_ROOT` | – | `khs0927/Ontology` 로컬 checkout 경로. 설정 시 C# 주력 서버에서 CAIR context 도구 활성화 |
+| `POWER_CAD_ONTOLOGY_COMMAND` | `aec-mcp` | Ontology MCP 실행 명령. ROOT가 설정된 경우 기본값 사용 |
+| `POWER_CAD_ONTOLOGY_TIMEOUT` | `20` | Ontology stdio 호출 제한시간(초, 1–120) |
 
 CLI 옵션: `power-cad-mcp [--backend auto|autocad|dxf] [--workspace DIR] [--dxf-path FILE] [--launch]
 [--transport stdio|streamable-http|sse --host 127.0.0.1 --port 8765] [--check] [--version]`
+
+## Ontology / CAIR 컨텍스트 연결
+
+C#/.NET 10 주력 서버는 선택적으로 공개 저장소 `khs0927/Ontology`의 `aec-mcp`를 **읽기 전용 컨텍스트 소스**로 사용할 수 있습니다.
+
+1. `cad_context_query`가 CAIR global memory를 검색합니다.
+2. CAD 형식의 `geometry_ref`에서 handle 후보만 추출합니다.
+3. 후보마다 현재 AutoCAD에 `cad_get`을 호출해 실제 존재와 fingerprint를 검증합니다.
+4. 결과는 1, 2, 3… 번호가 붙은 `context_id` candidate space로 반환됩니다.
+5. `cad_context_select(context_id, choice)`가 선택 시점에 fingerprint를 **다시 검증**합니다.
+6. 선택 결과는 `may_execute_mutation=false`이며, 실제 수정은 기존 `cad_move`, `cad_modify_opening` 등의 `expect_fingerprint` 경계를 그대로 거쳐야 합니다.
+
+즉 Ontology/GraphRAG 결과가 직접 AutoCAD를 수정할 수 없습니다. 오래된 지식이나 잘못된 매핑은 live CAD 재검증 단계에서 차단됩니다.
 
 ## 보안
 

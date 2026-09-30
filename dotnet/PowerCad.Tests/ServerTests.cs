@@ -12,6 +12,13 @@ namespace PowerCad.Tests;
 
 public sealed class ServerTests : IDisposable
 {
+    private sealed class FakeOntologyClient(JsonObject result) : IOntologyContextClient
+    {
+        public bool Enabled => true;
+
+        public Task<JsonObject> QueryGlobalMemoryAsync(string question, int topK, string? projectId, CancellationToken ct) =>
+            Task.FromResult((JsonObject)result.DeepClone());
+    }
     private readonly string _home = Directory.CreateTempSubdirectory("powercad-srv-").FullName;
 
     public void Dispose() => Directory.Delete(_home, recursive: true);
@@ -40,6 +47,76 @@ public sealed class ServerTests : IDisposable
 
         using var steps = JsonDocument.Parse("""[{"command":"create","params":{"entities":[{"type":"circle","center":[0,0],"radius":1}]}}]""");
         Assert.Single(Obj(await tools.Batch(steps.RootElement))["created"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task Ontology_context_is_numbered_live_verified_and_non_mutating()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-1",
+                    ["object_id"] = "aec://object/door-1",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 0.95,
+                },
+            },
+        };
+        var store = new OntologyCandidateStore();
+        var queryTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
+
+        var query = Obj(await queryTools.Query("door", max_choices: 5));
+        Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
+        var option = query["options"]![0]!.AsObject();
+        Assert.Equal(1, option["choice"]!.GetValue<int>());
+        Assert.Equal(handle, option["handle"]!.GetValue<string>());
+
+        // Simulate an MCP runtime resolving a fresh tool instance for the next request.
+        var selectTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
+        var selected = Obj(await selectTools.Select(query["context_id"]!.GetValue<string>(), 1));
+        Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
+        Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
+        Assert.Equal(handle, selected["selected"]!["handle"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Ontology_context_selection_rejects_stale_live_entity()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var fingerprint = door["fingerprint"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-1",
+                    ["object_id"] = "aec://object/door-1",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 1.0,
+                },
+            },
+        };
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
+        var query = Obj(await context.Query("door"));
+
+        _ = await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000);
+        var ex = await Assert.ThrowsAsync<McpException>(() => context.Select(query["context_id"]!.GetValue<string>(), 1));
+        Assert.StartsWith("[STALE_CONTEXT]", ex.Message);
     }
 
     [Fact]
@@ -90,7 +167,7 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_create", "cad_get", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_status"],
+            ["cad_batch", "cad_context_query", "cad_context_select", "cad_create", "cad_get", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_status"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
 
