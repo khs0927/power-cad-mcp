@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
@@ -18,6 +20,12 @@ public sealed class ServerTests : IDisposable
 
         public Task<JsonObject> QueryGlobalMemoryAsync(string question, int topK, string? projectId, CancellationToken ct) =>
             Task.FromResult((JsonObject)result.DeepClone());
+    }
+
+    private sealed class StubHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(responder(request));
     }
     private readonly string _home = Directory.CreateTempSubdirectory("powercad-srv-").FullName;
 
@@ -86,6 +94,90 @@ public sealed class ServerTests : IDisposable
         Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
         Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
         Assert.Equal(handle, selected["selected"]!["handle"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Golden_Sion_to_PowerCad_context_path_revalidates_before_transaction()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        string? requested = null;
+
+        var handler = new StubHttpHandler(request =>
+        {
+            requested = request.RequestUri?.PathAndQuery;
+            var body = new JsonObject
+            {
+                ["source"] = "khs0927/Ontology",
+                ["canonical"] = false,
+                ["read_only"] = true,
+                ["result"] = new JsonObject
+                {
+                    ["route"] = "GLOBAL_MEMORY",
+                    ["query"] = "door near lobby",
+                    ["hits"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["project_id"] = "P-GOLDEN",
+                            ["object_id"] = "aec://object/door-golden",
+                            ["type"] = "Door",
+                            ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                            ["score"] = 0.99,
+                        },
+                    },
+                },
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var sion = new SionAecClient(new HttpClient(handler), new Uri("http://127.0.0.1:8000/"));
+        var store = new OntologyCandidateStore();
+        var context = new OntologyContextTools(gateway, sion, store);
+
+        var query = Obj(await context.Query("door near lobby", project_id: "P-GOLDEN", max_choices: 5));
+        Assert.Contains("/api/v1/aec/query?", requested);
+        Assert.Contains("project_id=P-GOLDEN", requested);
+        Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
+
+        var selected = Obj(await context.Select(query["context_id"]!.GetValue<string>(), 1));
+        var chosen = selected["selected"]!.AsObject();
+        Assert.Equal(handle, chosen["handle"]!.GetValue<string>());
+        var fingerprint = chosen["fingerprint"]!.GetValue<string>();
+
+        var preview = Obj(await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000, dry_run: true));
+        Assert.False(preview["committed"]!.GetValue<bool>());
+
+        var applied = Obj(await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000));
+        Assert.True(applied["committed"]!.GetValue<bool>());
+        Assert.True(applied["checks_passed"]!.GetValue<int>() > 0);
+    }
+
+    [Fact]
+    public async Task Sion_client_rejects_context_not_marked_read_only()
+    {
+        var handler = new StubHttpHandler(_ =>
+        {
+            var body = new JsonObject
+            {
+                ["canonical"] = true,
+                ["read_only"] = false,
+                ["result"] = new JsonObject(),
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new SionAecClient(new HttpClient(handler), new Uri("http://127.0.0.1:8000/"));
+
+        var ex = await Assert.ThrowsAsync<McpException>(() =>
+            client.QueryGlobalMemoryAsync("door", 5, null, CancellationToken.None));
+        Assert.StartsWith("[SION_CONTRACT]", ex.Message);
     }
 
     [Fact]
