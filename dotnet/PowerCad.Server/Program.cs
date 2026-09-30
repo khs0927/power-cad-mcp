@@ -27,7 +27,7 @@ ICadGateway gateway = options.Simulate
     ? new SimulatorGateway(InMemoryCadDocument.CreateSample(), options.ReadOnly)
     : new PipeGateway(new DiscoveryStore(options.Home), options.Target, options.ReadOnly);
 builder.Services.AddSingleton(gateway);
-builder.Services.AddSingleton<IOntologyContextClient>(OntologyMcpClient.FromEnvironment(Environment.GetEnvironmentVariable));
+builder.Services.AddSingleton<IOntologyContextClient>(ContextClientFactory.FromEnvironment(Environment.GetEnvironmentVariable));
 builder.Services.AddSingleton<OntologyCandidateStore>();
 
 builder.Services
