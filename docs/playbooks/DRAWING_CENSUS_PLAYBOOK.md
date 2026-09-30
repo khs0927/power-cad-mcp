@@ -6,12 +6,13 @@
 ## 0. 준비 (사용자 PC)
 1. 원본을 건드리지 않도록 **복사본**을 연다.
 2. `DXFOUT` → 같은 폴더에 `건축,구조1.dxf` (버전 2018). ODA File Converter로 바꿔도 된다.
-   - ezdxf(오픈소스, MIT)는 DXF만 읽는다. DWG 직접 읽기용 LibreDWG는 선택 사항이다.
+   - ezdxf(오픈소스, MIT)는 DXF를 읽는다. ODA File Converter(무료)가 설치돼 있으면 DWG를 바로 넣어도 된다.
 
 ## 1. 전수 인벤토리 (자동)
 ```bash
 python -m power_cad_mcp.census 건축,구조1.dxf --standard docs/standards/floor_plan_standard.json --out census/건축구조1
 ```
+- Claude에서는 MCP 도구 `drawing_census {path, standard}`로 같은 일을 한다(DXF, ODA File Converter가 있으면 DWG도 직접).
 - 결과: `census.md`(사람용 요약), `census.json`(전체 데이터: 모든 문자, 레이어, 블록, 해치).
 - **첫 줄이 `COMPLETE`가 아니면 멈춘다.** 파일 속 그래픽 객체 수와 방문한 수가 같아야 한다(종료코드 1 = 누락).
 

@@ -6,7 +6,8 @@ On top of that it lists every table (layers, linetypes, text/dim styles, blocks)
 every hatch setting and every entity type the MCP query tools cannot see (leaders, proxies, xrefs, OLE),
 and compares the layers with the ZIUM standard so unmapped layers show up.
 
-DWG files must be converted first (AutoCAD ``DXFOUT`` or the ODA File Converter); ezdxf reads DXF only.
+DWG files are read through the ODA File Converter when installed; otherwise export DXF first
+(AutoCAD ``DXFOUT``).
 
 Usage::
 
@@ -243,9 +244,8 @@ def census(doc: Drawing, standard: dict[str, Any] | None = None) -> dict[str, An
         "buckets": {k: dict(v) for k, v in sorted(buckets.items())},
         "layers": layers,
         "undeclared_layers": undeclared,
-        "unmapped_layers": [
-            lay["name"] for lay in layers if lay["standard_status"] == "unmapped" and lay["entities"]
-        ],
+        # Any layer that holds entities (declared in the layer table or not) and has no standard mapping.
+        "unmapped_layers": sorted(n for n in layer_use if n not in std_layers and n not in merge_map),
         "empty_layers": [lay["name"] for lay in layers if not lay["entities"]],
         "blocks": [dict(b, inserts=blocks_used[b["name"]]) for b in block_defs],
         "unused_blocks": [n for n, c in blocks_used.items() if c == 0 and not n.startswith("*")],
@@ -356,6 +356,38 @@ def to_markdown(r: dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+def load(path: Path) -> Drawing:
+    """Read a DXF, or a DWG through the ODA File Converter when it is installed (ezdxf odafc add-on)."""
+    if path.suffix.lower() == ".dwg":
+        from ezdxf.addons import odafc
+
+        if not odafc.is_installed():
+            raise ValueError(
+                "DWG는 먼저 DXF로 변환하세요 (AutoCAD DXFOUT) 또는 ODA File Converter를 설치하세요."
+            )
+        return odafc.readfile(str(path))
+    return ezdxf.readfile(path)
+
+
+def run(path: Path, standard: Path | None, out: Path) -> dict[str, Any]:
+    """Census ``path``, write census.json + census.md into ``out``, and return a short summary."""
+    std = json.loads(standard.read_text(encoding="utf-8")) if standard else None
+    r = census(load(path), std)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "census.json").write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "census.md").write_text(to_markdown(r), encoding="utf-8")
+    return {
+        "completeness": r["completeness"],
+        "sheets": r["sheets"],
+        "bucket_totals": {k: sum(v.values()) for k, v in r["buckets"].items() if not k.startswith("block:")},
+        "unmapped_layers": r["unmapped_layers"],
+        "blind_spots": len(r["blind_spots"]),
+        "texts": len(r["texts"]),
+        "report": str(out / "census.md"),
+        "data": str(out / "census.json"),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Inventory every entity, table and text in a DXF and prove none was skipped."
@@ -366,19 +398,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--out", type=Path, default=Path("census"))
     a = ap.parse_args(argv)
-    if a.dxf.suffix.lower() == ".dwg":
-        print("DWG는 먼저 DXF로 변환하세요 (AutoCAD DXFOUT 또는 ODA File Converter).", file=sys.stderr)
+    try:
+        summary = run(a.dxf, a.standard, a.out)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
         return 2
-    doc = ezdxf.readfile(a.dxf)
-    std = json.loads(a.standard.read_text(encoding="utf-8")) if a.standard else None
-    r = census(doc, std)
-    a.out.mkdir(parents=True, exist_ok=True)
-    (a.out / "census.json").write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
-    (a.out / "census.md").write_text(to_markdown(r), encoding="utf-8")
-    c = r["completeness"]
+    c = summary["completeness"]
     print(
         f"{'COMPLETE' if c['complete'] else 'MISSED ' + str(len(c['missed']))}: "
-        f"{c['entities_visited']} visited / {c['entities_in_db']} in file → {a.out}/census.md"
+        f"{c['entities_visited']} visited / {c['entities_in_db']} in file → {summary['report']}"
     )
     return 0 if c["complete"] else 1
 
