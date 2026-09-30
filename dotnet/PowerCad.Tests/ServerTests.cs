@@ -71,15 +71,18 @@ public sealed class ServerTests : IDisposable
                 },
             },
         };
-        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
+        var store = new OntologyCandidateStore();
+        var queryTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
 
-        var query = Obj(await context.Query("door", max_choices: 5));
+        var query = Obj(await queryTools.Query("door", max_choices: 5));
         Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
         var option = query["options"]![0]!.AsObject();
         Assert.Equal(1, option["choice"]!.GetValue<int>());
         Assert.Equal(handle, option["handle"]!.GetValue<string>());
 
-        var selected = Obj(await context.Select(query["context_id"]!.GetValue<string>(), 1));
+        // Simulate an MCP runtime resolving a fresh tool instance for the next request.
+        var selectTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
+        var selected = Obj(await selectTools.Select(query["context_id"]!.GetValue<string>(), 1));
         Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
         Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
         Assert.Equal(handle, selected["selected"]!["handle"]!.GetValue<string>());
