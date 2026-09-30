@@ -111,7 +111,7 @@ public sealed class ServerTests : IDisposable
                 },
             },
         };
-        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory));
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
         var query = Obj(await context.Query("door"));
 
         _ = await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000);
