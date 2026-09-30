@@ -47,3 +47,20 @@ python -m power_cad_mcp.census 건축,구조1.dxf --standard docs/standards/floo
 2. PC에서 `cad_export_block {name, description, tags}` → `문서\PowerCad\blocks`. 익명 블록은 알아볼 수 있는 이름(`ZIUM_…`)으로 저장한다.
 3. 레이어 편입, 해치 설정, 표기 규칙처럼 블록이 아닌 것은 `floor_plan_standard.json`과 `ZIUM_GUIDE.md`에 반영한다.
 4. 인벤토리(`census.json`)를 도면과 함께 보관해 다음 분석의 기준선으로 쓴다. 도면이 바뀌면 다시 돌려 차이를 본다.
+
+## 5. 인벤토리 보관·다른 PC에서 불러오기
+census 결과는 실제 프로젝트 문자를 담고 있어 **저장소(공개)에 올리지 않고** 구글 드라이브에 둔다. 저장소의 `census/`는 .gitignore 대상이다.
+
+- 보관 위치: `G:\내 드라이브\PowerCad\census\<도면>_census\` (Google Drive for desktop, `내 드라이브`)
+  - 예: `건축,구조1_census\` = `census.md`, `census.json`, `CHECKLIST.md`(칸 닫기 결과), `test_sheet_T201_handles.json`(시험 시트 핸들)
+- 새 census를 만들면 같은 폴더 이름으로 드라이브에 복사한다(덮어쓰기 전 이전 것을 `_YYYYMMDD`로 남긴다).
+
+다른 PC에서:
+1. Google Drive for desktop을 설치하고 같은 계정으로 로그인한다(드라이브 문자는 PC마다 다를 수 있다 — 탐색기에서 `내 드라이브` 경로 확인).
+2. 저장소를 클론한 뒤 드라이브 폴더를 저장소 `census\`로 연결한다(복사하지 않고 링크하면 항상 최신):
+   ```powershell
+   New-Item -ItemType Junction -Path census -Target "G:\내 드라이브\PowerCad\census"
+   ```
+   링크가 안 되면 폴더를 `census\`로 복사해도 된다(읽기 전용 참고용).
+3. 확인: `census\건축,구조1_census\census.md` 머리의 `완전성: 통과`(누락 0)인지 본다. 도면(DWG)이 바뀌었으면 1절 명령으로 다시 돌려 차이를 본다.
+4. 블록 자산(`문서\PowerCad\blocks`)도 다른 PC에서 쓰려면 같은 방식으로 드라이브 `PowerCad\blocks`에 두고 `문서\PowerCad\blocks`를 그 폴더로 연결한다.

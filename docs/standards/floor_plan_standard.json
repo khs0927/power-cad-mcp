@@ -266,7 +266,18 @@
     "SL": "ETC",
     "etc": "ETC",
     "CADPOWER": "ETC",
-    "$rule": "By content, not by source layer: every insulation symbol -> INS, every HATCH entity -> HAT."
+    "CNTLINE": "CEN2",
+    "0-AC-DIM-OUT": "DIM",
+    "0-AC-DIM-IN": "DIM",
+    "0-AC-LEAD-TEXT": "TXT",
+    "A-글자": "TXT",
+    "A-FIN": "FIN",
+    "A-INS": "INS",
+    "A-HAT": "HAT",
+    "DIM1": "DIM",
+    "중앙선": "CEN2",
+    "H": "DIM for DIMENSION entities, otherwise FIX (same family as H1/H2)",
+    "$rule": "By content, not by source layer: every insulation symbol -> INS, every HATCH entity -> HAT, every DIMENSION entity -> DIM (plan sheets put 80-세부치수 dims on HATCH/H/CEN/INS/STAIR)."
   },
   "legacy_layers_drawing2": {
     "$comment": "Used in Drawing2 but NOT in the standard list. Do not create them in new work; ask the user how to map existing entities.",
