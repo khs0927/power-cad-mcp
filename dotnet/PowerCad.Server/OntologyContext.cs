@@ -193,6 +193,17 @@ public sealed class OntologyCandidateStore
         return true;
     }
 
+    private void Prune()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var row in _spaces)
+        {
+            if (now - row.Value.CreatedAt > CandidateTtl)
+            {
+                _spaces.TryRemove(row.Key, out _);
+            }
+        }
+    }
 }
 
 [McpServerToolType]
@@ -349,15 +360,4 @@ public sealed partial class OntologyContextTools(
         }.ToJsonString(CadJson.Options);
     }
 
-    private void Prune()
-    {
-        var now = DateTimeOffset.UtcNow;
-        foreach (var row in _spaces)
-        {
-            if (now - row.Value.CreatedAt > CandidateTtl)
-            {
-                _spaces.TryRemove(row.Key, out _);
-            }
-        }
-    }
 }
