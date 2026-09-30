@@ -176,7 +176,9 @@ public sealed class OntologyCandidateStore
 
     internal string Put(IReadOnlyList<OntologyCandidate> options)
     {
-        var contextId = candidateStore.Put(options);
+        var contextId = Guid.NewGuid().ToString("N");
+        _spaces[contextId] = new OntologyCandidateSpace(DateTimeOffset.UtcNow, options);
+        Prune();
         return contextId;
     }
 
@@ -307,9 +309,7 @@ public sealed partial class OntologyContextTools(
             }
         }
 
-        var contextId = Guid.NewGuid().ToString("N");
-        _spaces[contextId] = new OntologyCandidateSpace(DateTimeOffset.UtcNow, options);
-        Prune();
+        var contextId = candidateStore.Put(options);
 
         return new JsonObject
         {
