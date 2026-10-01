@@ -158,7 +158,7 @@ public sealed class OntologyMcpClient(string? command, string? root, TimeSpan ti
 }
 
 
-public sealed class SionAecClient(HttpClient http, Uri baseUri) : IOntologyContextClient
+public sealed class SionAecClient(HttpClient http, Uri baseUri, string? bearerToken = null) : IOntologyContextClient
 {
     public bool Enabled => true;
 
@@ -179,7 +179,13 @@ public sealed class SionAecClient(HttpClient http, Uri baseUri) : IOntologyConte
             seconds = parsed;
         }
 
-        return new SionAecClient(new HttpClient { Timeout = TimeSpan.FromSeconds(seconds) }, baseUri);
+        var token = env("POWER_CAD_SION_TOKEN");
+        if (!baseUri.IsLoopback && string.IsNullOrWhiteSpace(token))
+        {
+            throw new McpException("[SION_CONFIG] POWER_CAD_SION_TOKEN is required for a remote Sion URL.");
+        }
+
+        return new SionAecClient(new HttpClient { Timeout = TimeSpan.FromSeconds(seconds) }, baseUri, token);
     }
 
     public async Task<JsonObject> QueryGlobalMemoryAsync(
@@ -195,10 +201,16 @@ public sealed class SionAecClient(HttpClient http, Uri baseUri) : IOntologyConte
         }
 
         var endpoint = new Uri(baseUri, $"/api/v1/aec/query?{query}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        if (!string.IsNullOrWhiteSpace(bearerToken))
+        {
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
+        }
+
         HttpResponseMessage response;
         try
         {
-            response = await http.GetAsync(endpoint, ct).ConfigureAwait(false);
+            response = await http.SendAsync(request, ct).ConfigureAwait(false);
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
         {
@@ -253,6 +265,12 @@ public sealed record OntologyCandidate(
     string? Type,
     string? GeometryRef,
     double Score);
+
+public sealed record CadContextAction(
+    int Choice,
+    string Operation,
+    string Description,
+    bool Mutating);
 
 internal sealed record OntologyCandidateSpace(DateTimeOffset CreatedAt, IReadOnlyList<OntologyCandidate> Options);
 
@@ -317,6 +335,54 @@ public sealed partial class OntologyContextTools(
     }
 
     private static JsonArray StringArray(string value) => new(JsonValue.Create(value));
+
+    private static IReadOnlyList<CadContextAction> BuildActionSpace(JsonObject entity, OntologyCandidate selected)
+    {
+        var actions = new List<CadContextAction>
+        {
+            new(1, "cad_get", "Inspect the current live entity state", false),
+            new(2, "cad_move", "Move the selected entity with fingerprint protection", true),
+        };
+
+        var liveType = entity["type"]?.GetValue<string>()?.ToUpperInvariant();
+        if (liveType is "TEXT" or "MTEXT")
+        {
+            actions.Add(new(actions.Count + 1, "cad_replace_text", "Replace text on this exact entity", true));
+        }
+
+        var semanticType = selected.Type?.ToLowerInvariant();
+        if (liveType == "INSERT" && semanticType is "door" or "window" or "opening")
+        {
+            actions.Add(new(actions.Count + 1, "cad_modify_opening", "Modify the verified door/window/opening block", true));
+        }
+
+        return actions;
+    }
+
+    private async Task<(OntologyCandidate Candidate, JsonObject Entity)> ResolveLive(
+        string contextId,
+        int choice,
+        CancellationToken ct)
+    {
+        if (!candidateStore.TryGet(contextId, out var space) || space is null)
+        {
+            throw new McpException("[CONTEXT_EXPIRED] Candidate context is missing or older than 10 minutes. Run cad_context_query again.");
+        }
+
+        var selected = space.Options.SingleOrDefault(option => option.Choice == choice)
+            ?? throw new McpException("[INVALID_CHOICE] choice is outside the live-verified candidate space.");
+
+        var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(selected.Handle) }, ct).ConfigureAwait(false) as JsonObject;
+        var entity = (live?["entities"] as JsonArray)?.FirstOrDefault() as JsonObject
+            ?? throw new McpException("[STALE_CONTEXT] The selected CAD entity no longer exists.");
+        var currentFingerprint = entity["fingerprint"]?.GetValue<string>();
+        if (!string.Equals(currentFingerprint, selected.Fingerprint, StringComparison.Ordinal))
+        {
+            throw new McpException("[STALE_CONTEXT] The selected CAD entity changed after the Ontology context was built. Run cad_context_query again.");
+        }
+
+        return (selected, entity);
+    }
 
     [McpServerTool(Name = "cad_context_query", ReadOnly = true, Idempotent = false)]
     [Description("Query the external Ontology/CAIR memory, map only CAD-looking geometry refs to handles, then live-verify those handles in the current AutoCAD drawing. Returns a numbered candidate space; it never authorizes a mutation.")]
@@ -411,6 +477,54 @@ public sealed partial class OntologyContextTools(
         }.ToJsonString(CadJson.Options);
     }
 
+    [McpServerTool(Name = "cad_context_actions", ReadOnly = true, Idempotent = true)]
+    [Description("Return the numbered operation space allowed for one live-verified semantic candidate. The result is advisory and cannot mutate CAD.")]
+    public async Task<string> Actions(
+        [Description("context_id returned by cad_context_query")] string context_id,
+        [Description("1-based candidate choice")] int candidate_choice,
+        CancellationToken ct = default)
+    {
+        var (selected, entity) = await ResolveLive(context_id, candidate_choice, ct).ConfigureAwait(false);
+        var actions = BuildActionSpace(entity, selected);
+        return new JsonObject
+        {
+            ["status"] = "SUCCESS",
+            ["context_id"] = context_id,
+            ["candidate_choice"] = candidate_choice,
+            ["selected"] = JsonSerializer.SerializeToNode(selected, CadJson.Options),
+            ["actions"] = JsonSerializer.SerializeToNode(actions, CadJson.Options),
+            ["may_execute_mutation"] = false,
+            ["note"] = "Choose only an action number with cad_context_action_select.",
+        }.ToJsonString(CadJson.Options);
+    }
+
+    [McpServerTool(Name = "cad_context_action_select", ReadOnly = true, Idempotent = true)]
+    [Description("Resolve one numbered action from the live candidate action space. Revalidates the CAD fingerprint and returns the exact edit tool name without executing it.")]
+    public async Task<string> SelectAction(
+        [Description("context_id returned by cad_context_query")] string context_id,
+        [Description("1-based candidate choice")] int candidate_choice,
+        [Description("1-based action choice returned by cad_context_actions")] int action_choice,
+        CancellationToken ct = default)
+    {
+        var (selected, entity) = await ResolveLive(context_id, candidate_choice, ct).ConfigureAwait(false);
+        var actions = BuildActionSpace(entity, selected);
+        var action = actions.SingleOrDefault(row => row.Choice == action_choice)
+            ?? throw new McpException("[INVALID_ACTION] action_choice is outside the current live action space.");
+
+        return new JsonObject
+        {
+            ["status"] = "SUCCESS",
+            ["context_id"] = context_id,
+            ["candidate_choice"] = candidate_choice,
+            ["action_choice"] = action_choice,
+            ["selected"] = JsonSerializer.SerializeToNode(selected, CadJson.Options),
+            ["selected_action"] = JsonSerializer.SerializeToNode(action, CadJson.Options),
+            ["live_entity"] = entity.DeepClone(),
+            ["may_execute_mutation"] = false,
+            ["requires_edit_tool_with_expect_fingerprint"] = action.Mutating,
+        }.ToJsonString(CadJson.Options);
+    }
+
     [McpServerTool(Name = "cad_context_select", ReadOnly = true, Idempotent = true)]
     [Description("Resolve one numbered Ontology candidate and re-verify its AutoCAD fingerprint. Selection is read-only and does not authorize a CAD mutation.")]
     public async Task<string> Select(
@@ -418,22 +532,7 @@ public sealed partial class OntologyContextTools(
         [Description("1-based choice number from cad_context_query")] int choice,
         CancellationToken ct = default)
     {
-        if (!candidateStore.TryGet(context_id, out var space) || space is null)
-        {
-            throw new McpException("[CONTEXT_EXPIRED] Candidate context is missing or older than 10 minutes. Run cad_context_query again.");
-        }
-
-        var selected = space.Options.SingleOrDefault(option => option.Choice == choice)
-            ?? throw new McpException("[INVALID_CHOICE] choice is outside the live-verified candidate space.");
-
-        var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(selected.Handle) }, ct).ConfigureAwait(false) as JsonObject;
-        var entity = (live?["entities"] as JsonArray)?.FirstOrDefault() as JsonObject
-            ?? throw new McpException("[STALE_CONTEXT] The selected CAD entity no longer exists.");
-        var currentFingerprint = entity["fingerprint"]?.GetValue<string>();
-        if (!string.Equals(currentFingerprint, selected.Fingerprint, StringComparison.Ordinal))
-        {
-            throw new McpException("[STALE_CONTEXT] The selected CAD entity changed after the Ontology context was built. Run cad_context_query again.");
-        }
+        var (selected, entity) = await ResolveLive(context_id, choice, ct).ConfigureAwait(false);
 
         return new JsonObject
         {
