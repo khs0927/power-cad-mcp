@@ -341,7 +341,7 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_create", "cad_get", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_status"],
+            ["cad_batch", "cad_block_library", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_query", "cad_replace_text", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
 
@@ -356,6 +356,28 @@ public sealed class ServerTests : IDisposable
         var bad = await client.CallToolAsync("cad_move", new Dictionary<string, object?> { ["targets"] = new[] { new { handle = "FFFF" } }, ["displacement"] = new[] { 1.0, 0 } });
         Assert.True(bad.IsError);
         Assert.Contains("NOT_FOUND", ((TextContentBlock)bad.Content[0]).Text);
+    }
+
+    [Fact]
+    public async Task Snapshot_returns_an_image_block_and_new_tools_work()
+    {
+        var tools = new CadTools(new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false));
+        var shot = await tools.Snapshot(extents: true, width: 200);
+        Assert.IsType<ImageContentBlock>(shot.Content[0]);
+        Assert.Equal("image/png", ((ImageContentBlock)shot.Content[0]).MimeType);
+        Assert.DoesNotContain("image_base64", ((TextContentBlock)shot.Content[1]).Text);
+
+        var layer = Obj(await tools.SetLayer("A-DIMS", color: JsonDocument.Parse("\"cyan\"").RootElement, linetype: "CENTER"));
+        Assert.Equal("created", layer["other_changes"]![0]!["action"]!.GetValue<string>());
+        var layers = Obj(await tools.Layers(["A-DIMS"]));
+        Assert.Equal(4, layers["layers"]![0]!["color"]!.GetValue<int>());
+
+        var wall = Obj(await tools.Query(layers: ["A-WALL"], max_results: 1))["entities"]![0]!;
+        var copied = Obj(await tools.Copy([new EntityTarget(wall["handle"]!.GetValue<string>())], displacement: [0, 100], count: 3));
+        Assert.Equal(3, copied["created"]!.AsArray().Count);
+        var gone = Obj(await tools.Delete([new EntityTarget(copied["created"]![0]!["handle"]!.GetValue<string>())]));
+        Assert.Single(gone["deleted"]!.AsArray());
+        Assert.Contains("text_styles", await tools.Inspect());
     }
 
     [Fact]

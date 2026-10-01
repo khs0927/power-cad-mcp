@@ -18,6 +18,7 @@ public static class ErrorCodes
     public const string NotConnected = "NOT_CONNECTED";
     public const string ReadOnly = "READ_ONLY";
     public const string Internal = "INTERNAL";
+    public const string PluginOutdated = "PLUGIN_OUTDATED";
 }
 
 /// <summary>An anticipated failure with a machine-readable code and a hint for the agent's next step.</summary>

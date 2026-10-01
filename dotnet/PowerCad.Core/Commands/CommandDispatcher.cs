@@ -11,7 +11,7 @@ namespace PowerCad.Core.Commands;
 /// Read commands never open a write transaction; every mutating command goes through
 /// <see cref="ChangeSession"/> and supports <c>dry_run</c> (execute, verify, report, then roll back).
 /// </summary>
-public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? options = null)
+public sealed partial class CommandDispatcher(ICadDocument document, DispatcherOptions? options = null)
 {
     public const int MaxBatch = 20;
     public const int MaxResults = 1000;
@@ -19,9 +19,19 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
     private readonly DispatcherOptions _options = options ?? new DispatcherOptions();
 
     public static readonly IReadOnlyList<string> Commands =
-        ["status", "query", "get", "replace_text", "move", "modify_opening", "create", "batch"];
+    [
+        "status", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
+        "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch",
+        "export_block", "import_block", "export_hatch_pattern", "save",
+    ];
 
-    private static readonly HashSet<string> Mutating = ["replace_text", "move", "modify_opening", "create", "batch"];
+    /// <summary>Commands that change the drawing (refused in read-only mode). "save" is checked per mode.</summary>
+    public static readonly IReadOnlySet<string> Mutating = new HashSet<string>(
+        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch", "import_block"]);
+
+    /// <summary>Commands that may appear as batch steps.</summary>
+    private static readonly HashSet<string> Batchable =
+        ["replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer"];
 
     public JsonNode Execute(string command, JsonObject? parameters)
     {
@@ -36,8 +46,17 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
             "status" => Status(),
             "query" => document.Execute(tx => Query(tx, p), commit: false),
             "get" => document.Execute(tx => Get(tx, p), commit: false),
-            "replace_text" or "move" or "modify_opening" or "create" => RunChange(p, (s, q) => Apply(command, s, q)),
+            "inspect" => document.Execute(tx => Inspect(tx, p), commit: false),
+            "layers" => document.Execute(tx => ListLayers(tx, p), commit: false),
+            "measure" => document.Execute(tx => Measure(tx, p), commit: false),
+            "save" => Save(p),
+            "zoom" => View(p, snapshot: false),
+            "snapshot" => View(p, snapshot: true),
+            _ when Batchable.Contains(command) => RunChange(p, (s, q) => Apply(command, s, q)),
             "batch" => RunChange(p, Batch),
+            "export_block" => document.Execute(tx => ExportBlock(tx, p), commit: false),
+            "import_block" => ImportBlock(p),
+            "export_hatch_pattern" => document.Execute(tx => ExportHatchPattern(tx, p), commit: false),
             _ => throw new CadException(ErrorCodes.UnknownCommand, $"Unknown command '{command}'.", $"Known: {string.Join(", ", Commands)}."),
         };
     }
@@ -84,15 +103,154 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
             case "create":
                 Create(s, p);
                 break;
+            case "delete":
+                Delete(s, p);
+                break;
+            case "set_properties":
+                SetProperties(s, p);
+                break;
+            case "copy":
+                Copy(s, p);
+                break;
+            case "transform":
+                Transform(s, p);
+                break;
+            case "set_layer":
+                SetLayer(s, p);
+                break;
+            case "offset":
+                Offset(s, p);
+                break;
             default:
                 throw new CadException(ErrorCodes.UnknownCommand, $"'{command}' cannot run inside a batch.");
         }
     }
 
+    // ----------------------------------------------------------- block assets
+    private JsonObject ExportBlock(ICadTransaction tx, Params p)
+    {
+        p.AllowOnly("name", "path", "description", "tags");
+        var name = p.String("name");
+        if (!tx.BlockExists(name))
+        {
+            throw new CadException(ErrorCodes.NotFound, $"Block '{name}' is not defined in this drawing.", "List blocks with cad_inspect sections:[\"blocks\"].");
+        }
+
+        var path = BlockLibrary.Resolve(name, p.OptString("path"));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var card = tx.ExportBlock(name, path);
+        card["name"] = name;
+        card["path"] = path;
+        card["source_drawing"] = document.Describe()["document"]?.DeepClone();
+        card["exported_at"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+        if (p.OptString("description") is { } d)
+        {
+            card["description"] = d;
+        }
+
+        if (p.Strings("tags") is { Count: > 0 } tags)
+        {
+            card["tags"] = new JsonArray(tags.Select(t => (JsonNode)t).ToArray());
+        }
+
+        BlockLibrary.WriteCard(path, card);
+        return card;
+    }
+
+    /// <summary>Rebuilds a hatch's pattern as a .pat file (default: AutoCAD's user Support folder).</summary>
+    private static JsonObject ExportHatchPattern(ICadTransaction tx, Params p)
+    {
+        p.AllowOnly("handle", "name", "description", "folder", "overwrite");
+        var info = tx.HatchPattern(p.String("handle"));
+        var source = info["name"]!.GetValue<string>();
+        if (info["type"]?.GetValue<string>() == "solid" || source.Equals("SOLID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new CadException(ErrorCodes.Unsupported, "SOLID fills have no pattern lines to export.");
+        }
+
+        var name = p.OptString("name") ?? source;
+        if (name.Length == 0 || name.Any(c => !(char.IsLetterOrDigit(c) || c is '_' or '-')))
+        {
+            throw CadException.Invalid($"Pattern name '{name}' must be letters, digits, '_' or '-'.");
+        }
+
+        var folder = p.OptString("folder") ?? info["support_dir"]?.GetValue<string>()
+            ?? throw CadException.Invalid("No AutoCAD Support folder known; pass 'folder'.");
+        var path = Path.Combine(folder, name + ".pat");
+        var text = PatFile.Build(name, p.OptString("description") ?? $"from {source}", info["scale"]!.GetValue<double>(), info["angle"]!.GetValue<double>(), info["lines"]!.AsArray());
+        var exists = File.Exists(path);
+        if (exists && !p.Bool("overwrite"))
+        {
+            throw new CadException(ErrorCodes.InvalidParams, $"'{path}' already exists.", "Pass overwrite:true to replace it, or choose another name.");
+        }
+
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(path, text + "\r\n", new System.Text.UTF8Encoding(false));
+        return new JsonObject
+        {
+            ["pattern"] = name,
+            ["source_pattern"] = source,
+            ["path"] = path,
+            ["replaced"] = exists,
+            ["line_count"] = info["lines"]!.AsArray().Count,
+            ["pat"] = text,
+            ["hint"] = $"Use it with cad_create hatch pattern:\"{name}\". AutoCAD finds it by name on the support path.",
+        };
+    }
+
+    private JsonObject ImportBlock(Params p)
+    {
+        p.AllowOnly("name", "path", "replace", "dry_run");
+        var name = p.OptString("name");
+        var given = p.OptString("path");
+        if (name is null && given is null)
+        {
+            throw CadException.Invalid("Give 'name' (library asset) or 'path' (DWG file).");
+        }
+
+        var path = BlockLibrary.Resolve(name ?? Path.GetFileNameWithoutExtension(given!), given);
+        name ??= Path.GetFileNameWithoutExtension(path);
+        if (!File.Exists(path))
+        {
+            throw new CadException(ErrorCodes.NotFound, $"Block file '{path}' does not exist.", "List assets with cad_block_library, or export one with cad_export_block.");
+        }
+
+        var replace = p.Bool("replace");
+        var dryRun = p.Bool("dry_run");
+        var existed = document.Execute(tx => tx.BlockExists(name), commit: false);
+        var result = new JsonObject { ["name"] = name, ["path"] = path, ["already_defined"] = existed, ["dry_run"] = dryRun };
+        if (existed && !replace)
+        {
+            result["imported"] = false;
+            result["note"] = "The drawing already has this block; nothing changed. Pass replace:true to redefine it.";
+            return result;
+        }
+
+        if (dryRun)
+        {
+            result["imported"] = false;
+            result["note"] = existed ? "Would redefine the existing block." : "Would define the block.";
+            return result;
+        }
+
+        document.Execute(
+            tx =>
+            {
+                tx.ImportBlock(path, name, replace);
+                return tx.BlockExists(name)
+                    ? true
+                    : throw new CadException(ErrorCodes.VerifyFailed, $"Block '{name}' is still missing after the import.");
+            },
+            commit: true);
+        result["imported"] = true;
+        result["hint"] = "Place it with cad_create {type:\"insert\", name, position}.";
+        return result;
+    }
+
     // ------------------------------------------------------------------ reads
     private JsonObject Query(ICadTransaction tx, Params p)
     {
-        p.AllowOnly("types", "layers", "handles", "text_contains", "text_regex", "block_name", "within", "max_results");
+        p.AllowOnly("types", "layers", "handles", "text_contains", "text_regex", "block_name", "within", "within_mode", "max_results", "group_by", "compact");
         var types = p.Strings("types").Select(NormalizeType).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var layers = p.Strings("layers").ToHashSet(StringComparer.OrdinalIgnoreCase);
         var handles = p.Strings("handles").ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -101,6 +259,20 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
         var block = p.OptString("block_name") is { } bn ? MakeWildcard(bn) : null;
         var within = ParseWindow(p.Node["within"]);
         var max = p.Int("max_results", 100, 1, MaxResults);
+        var withinMode = (p.OptString("within_mode") ?? "anchor").ToLowerInvariant();
+        if (withinMode is not ("anchor" or "inside" or "overlap"))
+        {
+            throw CadException.Invalid("'within_mode' must be anchor, inside or overlap.");
+        }
+
+        var groupBy = p.OptString("group_by")?.ToLowerInvariant();
+        if (groupBy is not (null or "layer" or "type" or "layer_type"))
+        {
+            throw CadException.Invalid("'group_by' must be layer, type or layer_type.");
+        }
+
+        var compact = p.Bool("compact");
+        var groups = new SortedDictionary<string, int>(StringComparer.Ordinal);
 
         var matched = new JsonArray();
         var total = 0;
@@ -112,16 +284,33 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
                 || (contains is not null && !(e.Text ?? AttributeText(e)).Contains(contains, StringComparison.OrdinalIgnoreCase))
                 || (regex is not null && !regex.IsMatch(e.Text ?? AttributeText(e)))
                 || (block is not null && !(e.Type == EntityTypes.Insert && block.IsMatch(e.Props["name"]?.GetValue<string>() ?? "")))
-                || (within is { } w && !(e.Anchor is { } a && a.X >= w.Min.X && a.X <= w.Max.X && a.Y >= w.Min.Y && a.Y <= w.Max.Y)))
+                || (within is { } w && !InWindow(e, w, withinMode)))
             {
                 continue;
             }
 
             total++;
+            if (groupBy is not null)
+            {
+                var key = groupBy switch { "layer" => e.Layer, "type" => e.Type, _ => $"{e.Layer}|{e.Type}" };
+                groups[key] = groups.GetValueOrDefault(key) + 1;
+                continue;
+            }
+
             if (matched.Count < max)
             {
-                matched.Add(e.ToJson());
+                matched.Add(compact ? Compact(e) : e.ToJson());
             }
+        }
+
+        if (groupBy is not null)
+        {
+            return new JsonObject
+            {
+                ["total"] = total,
+                ["group_by"] = groupBy,
+                ["groups"] = new JsonObject(groups.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)kv.Value))),
+            };
         }
 
         return new JsonObject
@@ -131,6 +320,41 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
             ["truncated"] = total > matched.Count,
             ["entities"] = matched,
         };
+    }
+
+    private static JsonObject Compact(EntityState e)
+    {
+        var o = new JsonObject { ["handle"] = e.Handle, ["type"] = e.Type, ["layer"] = e.Layer, ["fingerprint"] = e.Fingerprint };
+        if (e.Text is { } t)
+        {
+            o["text"] = t;
+        }
+
+        if (e.Props["name"] is { } n)
+        {
+            o["name"] = n.DeepClone();
+        }
+
+        if (e.Props["bbox"] is { } b)
+        {
+            o["bbox"] = b.DeepClone();
+        }
+
+        return o;
+    }
+
+    private static bool InWindow(EntityState e, (Vec3 Min, Vec3 Max) w, string mode)
+    {
+        if (mode == "anchor" || e.Props["bbox"] is not JsonArray { Count: 2 } bb)
+        {
+            return e.Anchor is { } a && a.X >= w.Min.X && a.X <= w.Max.X && a.Y >= w.Min.Y && a.Y <= w.Max.Y;
+        }
+
+        var lo = Vec3.FromJson(bb[0], "bbox");
+        var hi = Vec3.FromJson(bb[1], "bbox");
+        return mode == "inside"
+            ? lo.X >= w.Min.X && lo.Y >= w.Min.Y && hi.X <= w.Max.X && hi.Y <= w.Max.Y
+            : lo.X <= w.Max.X && hi.X >= w.Min.X && lo.Y <= w.Max.Y && hi.Y >= w.Min.Y;
     }
 
     private static string AttributeText(EntityState e) =>
@@ -468,6 +692,15 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
                 throw new CadException(ErrorCodes.LockedLayer, $"Layer '{layer}' is locked.");
             }
 
+            if (spec.Style is { } style)
+            {
+                var kind = spec.Type == EntityTypes.Dimension ? "dim_style" : "text_style";
+                if (!s.Tx.ResourceExists(kind, style))
+                {
+                    throw new CadException(ErrorCodes.NotFound, $"{(kind == "dim_style" ? "Dimension" : "Text")} style '{style}' does not exist.", "Call cad_inspect to list styles.");
+                }
+            }
+
             var handle = s.Tx.Create(spec);
             s.RecordCreated(handle);
             s.Expect(handle, $"created {spec.Type} matches the request", spec.Matches);
@@ -484,7 +717,7 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
             var step = new Params(steps[i]);
             step.AllowOnly("command", "params");
             var command = step.String("command");
-            if (command is "batch" or "status" or "query" or "get")
+            if (!Batchable.Contains(command))
             {
                 throw CadException.Invalid($"steps[{i}]: '{command}' is not allowed inside a batch.");
             }
@@ -564,16 +797,7 @@ public sealed class CommandDispatcher(ICadDocument document, DispatcherOptions? 
         return (new Vec3(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y)), new Vec3(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y)));
     }
 
-    private static bool AngleClose(double? actual, double expected)
-    {
-        if (actual is not { } a)
-        {
-            return false;
-        }
-
-        var diff = Math.Abs(((a - expected) % 360 + 540) % 360 - 180);
-        return diff <= 1e-6;
-    }
+    private static bool AngleClose(double? actual, double expected) => Transform2D.AngleClose(actual, expected);
 
     private static string Fmt(Vec3 v) => $"[{JsonFmt(v.X)}, {JsonFmt(v.Y)}, {JsonFmt(v.Z)}]";
 

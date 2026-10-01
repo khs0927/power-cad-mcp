@@ -23,7 +23,7 @@ public sealed record EntityTarget(
 /// commit (or roll back on any failure) → before/after diff. Use dry_run=true to preview.
 /// </summary>
 [McpServerToolType]
-public sealed class CadTools(ICadGateway gateway)
+public sealed partial class CadTools(ICadGateway gateway)
 {
     private async Task<string> Call(string command, JsonObject parameters, CancellationToken ct)
     {
@@ -36,6 +36,13 @@ public sealed class CadTools(ICadGateway gateway)
         {
             var result = await gateway.SendAsync(command, parameters, ct).ConfigureAwait(false);
             return result?.ToJsonString(CadJson.Options) ?? "null";
+        }
+        catch (CadException e) when (e.Code == ErrorCodes.UnknownCommand && Core.Commands.CommandDispatcher.Commands.Contains(command))
+        {
+            throw new McpException(
+                $"[{ErrorCodes.PluginOutdated}] The AutoCAD plugin does not know '{command}' yet: it is older than this server. "
+                + "Hint: close AutoCAD, run scripts\\install_autocad_plugin.ps1 -SkipBuild (or reinstall the bundle), then start AutoCAD again.",
+                e);
         }
         catch (CadException e)
         {
@@ -70,9 +77,9 @@ public sealed class CadTools(ICadGateway gateway)
     }
 
     [McpServerTool(Name = "cad_query", ReadOnly = true, Idempotent = true)]
-    [Description("Find model-space entities. Returns handle, type, layer, fingerprint and geometry (text, position, points, block name, width, dynamic properties, attributes). Filter narrowly; results are capped.")]
+    [Description("Find model-space entities. Returns handle, type, layer, fingerprint and geometry (text/style/justify, points, block name, width, dynamic properties, attributes, dimension points, hatch pattern, non-ByLayer color/linetype/lineweight, bbox). Filter narrowly; results are capped. group_by returns counts only; compact returns handle/type/layer/fingerprint/text/bbox.")]
     public Task<string> Query(
-        [Description("Entity types: LINE, LWPOLYLINE, CIRCLE, ARC, TEXT, MTEXT, INSERT (blocks/doors/windows), POINT")] string[]? types = null,
+        [Description("Entity types: LINE, LWPOLYLINE, CIRCLE, ARC, TEXT, MTEXT, INSERT (blocks/doors/windows), POINT, DIMENSION, HATCH")] string[]? types = null,
         [Description("Layer names")] string[]? layers = null,
         [Description("Exact handles")] string[]? handles = null,
         [Description("Case-insensitive substring of TEXT/MTEXT/attribute text")] string? text_contains = null,
@@ -80,6 +87,9 @@ public sealed class CadTools(ICadGateway gateway)
         [Description("Block name, wildcards * and ? allowed (e.g. DOOR*)")] string? block_name = null,
         [Description("Window [[xmin,ymin],[xmax,ymax]] tested against each entity's reference point")] double[][]? within = null,
         [Description("1-1000, default 100")] int? max_results = null,
+        [Description("How 'within' is tested: anchor (reference point, default), inside (whole bbox inside), overlap (bbox touches)")] string? within_mode = null,
+        [Description("Return counts per layer | type | layer_type instead of entities")] string? group_by = null,
+        [Description("Return only handle, type, layer, fingerprint, text, name and bbox")] bool? compact = null,
         CancellationToken ct = default) =>
         Call("query", new JsonObject
         {
@@ -91,6 +101,9 @@ public sealed class CadTools(ICadGateway gateway)
             ["block_name"] = block_name,
             ["within"] = Node(within),
             ["max_results"] = max_results,
+            ["within_mode"] = within_mode,
+            ["group_by"] = group_by,
+            ["compact"] = compact,
         }, ct);
 
     [McpServerTool(Name = "cad_get", ReadOnly = true, Idempotent = true)]
@@ -171,7 +184,14 @@ public sealed class CadTools(ICadGateway gateway)
         }, ct);
 
     [McpServerTool(Name = "cad_create", Destructive = false)]
-    [Description("Create entities. Each item: {type: line|polyline|circle|arc|text|mtext|insert, layer?, ...}. line{start,end}; polyline{points,closed}; circle{center,radius}; arc{center,radius,start_angle,end_angle}; text{text,position,height?,rotation?}; mtext{text,position,height?,width?}; insert{name,position,rotation?,scale?}.")]
+    [Description("Create entities (max 200 per call), verified after creation. Every item: {type, layer?, color?, linetype?, lineweight?, ...}. "
+        + "line{start,end}; polyline{points,closed}; circle{center,radius}; arc{center,radius,start_angle,end_angle (degrees, CCW)}; "
+        + "text{text,position,height?,rotation?,justify? (left|center|right|middle|TL..BR; position is then the alignment point),style?,width_factor?}; "
+        + "mtext{text,position,height?,width?,rotation?,justify? (TL..BR),style?}; insert{name,position,rotation?,scale?}; point{position}; "
+        + "dimension{kind: rotated|aligned, p1, p2, line_point | offset, rotation? (rotated: 0 horizontal, 90 vertical), style? (dim style), text? (override)}; "
+        + "hatch{points (closed loop), pattern? (SOLID, ANSI31, AR-CONC...), scale?, angle?}; "
+        + "leader{points (points[0] = arrow tip, last = landing where the note text goes), style? (dim style: arrow size), arrow? (default | none | _DOT, _DOTSMALL, _OPEN30 ... arrow block)} - add the note as a separate text/mtext at the landing. "
+        + "color: ACI 1-255 | bylayer | byblock | red.. | #rrggbb; lineweight: mm (0.25) | bylayer | byblock | default.")]
     public Task<string> Create(
         [Description("Entities to create (max 200)")] JsonElement entities,
         [Description("Preview: run, verify and report, then roll back")] bool dry_run = false,
@@ -179,7 +199,7 @@ public sealed class CadTools(ICadGateway gateway)
         Call("create", new JsonObject { ["entities"] = JsonNode.Parse(entities.GetRawText()), ["dry_run"] = dry_run }, ct);
 
     [McpServerTool(Name = "cad_batch", Destructive = true)]
-    [Description("Run up to 20 edit steps atomically in ONE transaction: [{command: replace_text|move|modify_opening|create, params: {...same as the tools...}}]. Any failed step or check rolls everything back.")]
+    [Description("Run up to 20 edit steps atomically in ONE transaction: [{command: replace_text|move|modify_opening|create|delete|set_properties|copy|transform|offset|set_layer, params: {...same as the tools...}}]. Any failed step or check rolls everything back.")]
     public Task<string> Batch(
         [Description("Steps, max 20")] JsonElement steps,
         [Description("Preview: run, verify and report, then roll back")] bool dry_run = false,

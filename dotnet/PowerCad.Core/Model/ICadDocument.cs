@@ -13,7 +13,23 @@ public interface ICadDocument
     /// aborts it, so a failed verification leaves the drawing untouched.
     /// </summary>
     T Execute<T>(Func<ICadTransaction, T> work, bool commit);
+
+    /// <summary>
+    /// Zooms the active view to the window (no database change). When <paramref name="snapshotWidth"/> is
+    /// set, also renders the view and returns it as a base64 PNG under "image_base64".
+    /// </summary>
+    JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight);
+
+    /// <summary>
+    /// Writes the drawing to disk. With <see cref="SaveRequest.Copy"/> a copy goes to the given path and the
+    /// open document is untouched; otherwise the open document itself is saved (DWG only). The dispatcher
+    /// has already validated the path, format, overwrite and user-confirmation rules.
+    /// </summary>
+    JsonObject Save(SaveRequest request);
 }
+
+/// <summary>A validated save request. Path is absolute; Format is "dwg" or "dxf".</summary>
+public sealed record SaveRequest(string? Path, string Format, bool Copy);
 
 public interface ICadTransaction
 {
@@ -37,6 +53,46 @@ public interface ICadTransaction
 
     /// <summary>Creates an entity from a validated spec (see <see cref="Commands.CreateSpec"/>) and returns its handle.</summary>
     string Create(Commands.CreateSpec spec);
+
+    /// <summary>Erases a model-space entity.</summary>
+    void Delete(string handle);
+
+    /// <summary>Changes layer/color/linetype/lineweight and, for TEXT/MTEXT, height/rotation/style/justification.</summary>
+    void SetProperties(string handle, PropertyEdit edit);
+
+    /// <summary>Copies an entity, displaces the copy and returns its handle.</summary>
+    string Copy(string handle, Vec3 displacement);
+
+    /// <summary>Rotates, scales or mirrors an entity in place. TEXT/MTEXT stay readable when mirrored (MIRRTEXT=0).</summary>
+    void Transform(string handle, Transform2D transform);
+
+    /// <summary>All layers (name, color, linetype, lineweight, on, frozen, locked, plot, current).</summary>
+    IReadOnlyList<JsonObject> Layers();
+
+    /// <summary>Creates or changes one layer.</summary>
+    void SetLayer(LayerEdit edit);
+
+    /// <summary>Drawing resources: units, current settings, text/dim styles, linetypes, blocks, extents.</summary>
+    JsonObject Inspect();
+
+    /// <summary>
+    /// Writes a block definition to a standalone DWG (its contents in model space, block base point at the
+    /// origin) and returns what was exported: extents, entity_count, texts.
+    /// </summary>
+    JsonObject ExportBlock(string name, string path);
+
+    /// <summary>Defines (or, with <paramref name="replace"/>, redefines) block <paramref name="name"/> from a DWG file.</summary>
+    void ImportBlock(string path, string name, bool replace);
+
+    /// <summary>
+    /// A hatch's pattern as evaluated in the drawing: name, type, scale, angle and its lines (angle in
+    /// degrees, base, offset vector, dashes - all in drawing units), plus "support_dir" (AutoCAD's user
+    /// Support folder, where .pat files are found by name).
+    /// </summary>
+    JsonObject HatchPattern(string handle);
+
+    /// <summary>True when the named resource exists. kind: text_style, dim_style, linetype, layer.</summary>
+    bool ResourceExists(string kind, string name);
 }
 
 /// <summary>Changes to a block reference (doors, windows, openings...). Null means "leave as is".</summary>

@@ -20,6 +20,9 @@ public sealed class ChangeSession(ICadTransaction tx)
     private readonly List<string> _order = [];
     private readonly List<string> _created = [];
     private readonly List<(string Handle, string Description, Func<EntityState, bool> Check)> _checks = [];
+    private readonly List<(string Description, Func<bool> Check)> _globalChecks = [];
+    private readonly HashSet<string> _deleted = new(StringComparer.OrdinalIgnoreCase);
+    private readonly JsonArray _notes = [];
 
     public ICadTransaction Tx { get; } = tx;
 
@@ -65,6 +68,15 @@ public sealed class ChangeSession(ICadTransaction tx)
 
     public void RecordCreated(string handle) => _created.Add(handle);
 
+    /// <summary>Marks a captured entity as erased; verification then requires it to be gone.</summary>
+    public void RecordDeleted(string handle) => _deleted.Add(handle);
+
+    /// <summary>A postcondition that is not about one entity (e.g. a layer's settings).</summary>
+    public void ExpectGlobal(string description, Func<bool> check) => _globalChecks.Add((description, check));
+
+    /// <summary>Adds a free-form entry to the report's "other_changes" list (layers, settings...).</summary>
+    public void Note(JsonObject note) => _notes.Add(note);
+
     /// <summary>Evaluates all postconditions and builds the diff report. Throws VERIFY_FAILED on any failure.</summary>
     public JsonObject VerifyAndReport()
     {
@@ -81,8 +93,46 @@ public sealed class ChangeSession(ICadTransaction tx)
         }
 
         var failures = new JsonArray();
+        foreach (var handle in _deleted)
+        {
+            try
+            {
+                Tx.Read(handle);
+                failures.Add(new JsonObject { ["handle"] = handle, ["check"] = "entity was erased", ["detail"] = "it still exists" });
+            }
+            catch (CadException e) when (e.Code == ErrorCodes.NotFound)
+            {
+                // gone, as intended
+            }
+        }
+
+        foreach (var (description, check) in _globalChecks)
+        {
+            bool ok;
+            string? detail = null;
+            try
+            {
+                ok = check();
+            }
+            catch (CadException e)
+            {
+                ok = false;
+                detail = e.Message;
+            }
+
+            if (!ok)
+            {
+                failures.Add(new JsonObject { ["handle"] = null, ["check"] = description, ["detail"] = detail });
+            }
+        }
+
         foreach (var (handle, description, check) in _checks)
         {
+            if (_deleted.Contains(handle))
+            {
+                continue; // erased later in the same batch; its own erase check covers it
+            }
+
             bool ok;
             string? detail = null;
             try
@@ -106,15 +156,22 @@ public sealed class ChangeSession(ICadTransaction tx)
             var ex = new CadException(
                 ErrorCodes.VerifyFailed,
                 $"{failures.Count} post-change check(s) failed; the transaction was rolled back and the drawing is unchanged: "
-                + string.Join("; ", failures.Select(f => $"{f!["handle"]}: {f["check"]}")),
+                + string.Join("; ", failures.Select(f => $"{f!["handle"] ?? "drawing"}: {f["check"]}{(f["detail"] is null ? "" : $" ({f["detail"]})")}")),
                 "Inspect the entity with cad_get, adjust the request (units, block parameters, locked/annotative objects) and retry.");
             throw ex;
         }
 
         var changes = new JsonArray();
+        var deleted = new JsonArray();
         foreach (var handle in _order)
         {
             var before = _before[handle];
+            if (_deleted.Contains(handle))
+            {
+                deleted.Add(new JsonObject { ["handle"] = handle, ["type"] = before.Type, ["layer"] = before.Layer, ["fingerprint"] = before.Fingerprint });
+                continue;
+            }
+
             var now = ReadAfter(handle);
             var diff = Diff(before, now);
             if (diff.Count == 0)
@@ -132,12 +189,23 @@ public sealed class ChangeSession(ICadTransaction tx)
             });
         }
 
-        return new JsonObject
+        var report = new JsonObject
         {
             ["changes"] = changes,
-            ["created"] = new JsonArray(_created.Select(h => (JsonNode)ReadAfter(h).ToJson()).ToArray()),
-            ["checks_passed"] = _checks.Count,
+            ["created"] = new JsonArray(_created.Where(h => !_deleted.Contains(h)).Select(h => (JsonNode)ReadAfter(h).ToJson()).ToArray()),
+            ["checks_passed"] = _checks.Count + _globalChecks.Count + _deleted.Count,
         };
+        if (deleted.Count > 0)
+        {
+            report["deleted"] = deleted;
+        }
+
+        if (_notes.Count > 0)
+        {
+            report["other_changes"] = _notes.DeepClone();
+        }
+
+        return report;
     }
 
     public static JsonObject Diff(EntityState before, EntityState after)
