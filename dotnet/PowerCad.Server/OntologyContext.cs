@@ -351,7 +351,7 @@ public sealed partial class OntologyContextTools(
         }
 
         var semanticType = selected.Type?.ToLowerInvariant();
-        if (liveType == "INSERT" && semanticType is "door" or "window" or "opening")
+        if (liveType == "INSERT" && semanticType is ("door" or "window" or "opening"))
         {
             actions.Add(new(actions.Count + 1, "cad_modify_opening", "Modify the verified door/window/opening block", true));
         }
