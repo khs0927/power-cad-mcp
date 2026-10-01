@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
@@ -12,6 +14,19 @@ namespace PowerCad.Tests;
 
 public sealed class ServerTests : IDisposable
 {
+    private sealed class FakeOntologyClient(JsonObject result) : IOntologyContextClient
+    {
+        public bool Enabled => true;
+
+        public Task<JsonObject> QueryGlobalMemoryAsync(string question, int topK, string? projectId, CancellationToken ct) =>
+            Task.FromResult((JsonObject)result.DeepClone());
+    }
+
+    private sealed class StubHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(responder(request));
+    }
     private readonly string _home = Directory.CreateTempSubdirectory("powercad-srv-").FullName;
 
     public void Dispose() => Directory.Delete(_home, recursive: true);
@@ -40,6 +55,242 @@ public sealed class ServerTests : IDisposable
 
         using var steps = JsonDocument.Parse("""[{"command":"create","params":{"entities":[{"type":"circle","center":[0,0],"radius":1}]}}]""");
         Assert.Single(Obj(await tools.Batch(steps.RootElement))["created"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task Ontology_context_is_numbered_live_verified_and_non_mutating()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-1",
+                    ["object_id"] = "aec://object/door-1",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 0.95,
+                },
+            },
+        };
+        var store = new OntologyCandidateStore();
+        var queryTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
+
+        var query = Obj(await queryTools.Query("door", max_choices: 5));
+        Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
+        var option = query["options"]![0]!.AsObject();
+        Assert.Equal(1, option["choice"]!.GetValue<int>());
+        Assert.Equal(handle, option["handle"]!.GetValue<string>());
+
+        // Simulate an MCP runtime resolving a fresh tool instance for the next request.
+        var selectTools = new OntologyContextTools(gateway, new FakeOntologyClient(memory), store);
+        var selected = Obj(await selectTools.Select(query["context_id"]!.GetValue<string>(), 1));
+        Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
+        Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
+        Assert.Equal(handle, selected["selected"]!["handle"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Ontology_context_exposes_numbered_live_action_space()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-ACTION",
+                    ["object_id"] = "aec://object/door-action",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 1.0,
+                },
+            },
+        };
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
+        var query = Obj(await context.Query("door"));
+        var contextId = query["context_id"]!.GetValue<string>();
+
+        var actions = Obj(await context.Actions(contextId, 1));
+        Assert.False(actions["may_execute_mutation"]!.GetValue<bool>());
+        var operations = actions["actions"]!.AsArray()
+            .Select(row => row!["operation"]!.GetValue<string>())
+            .ToArray();
+        Assert.Equal(["cad_get", "cad_move", "cad_modify_opening"], operations);
+
+        var selected = Obj(await context.SelectAction(contextId, 1, 3));
+        Assert.Equal("cad_modify_opening", selected["selected_action"]!["operation"]!.GetValue<string>());
+        Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
+        Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
+
+        var invalid = await Assert.ThrowsAsync<McpException>(() => context.SelectAction(contextId, 1, 99));
+        Assert.StartsWith("[INVALID_ACTION]", invalid.Message);
+    }
+
+    [Fact]
+    public async Task Sion_client_sends_bearer_token_when_configured()
+    {
+        string? authorization = null;
+        var handler = new StubHttpHandler(request =>
+        {
+            authorization = request.Headers.Authorization?.ToString();
+            var body = new JsonObject
+            {
+                ["canonical"] = false,
+                ["read_only"] = true,
+                ["result"] = new JsonObject
+                {
+                    ["route"] = "GLOBAL_MEMORY",
+                    ["query"] = "door",
+                    ["hits"] = new JsonArray(),
+                },
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new SionAecClient(
+            new HttpClient(handler),
+            new Uri("https://sion.example/"),
+            "remote-sion-token-123456789");
+
+        _ = await client.QueryGlobalMemoryAsync("door", 5, null, CancellationToken.None);
+        Assert.Equal("Bearer remote-sion-token-123456789", authorization);
+    }
+
+    [Fact]
+    public void Remote_Sion_configuration_requires_token()
+    {
+        var ex = Assert.Throws<McpException>(() =>
+            ContextClientFactory.FromEnvironment(name => name == "POWER_CAD_SION_URL" ? "https://sion.example/" : null));
+        Assert.StartsWith("[SION_CONFIG]", ex.Message);
+    }
+
+    [Fact]
+    public async Task Golden_Sion_to_PowerCad_context_path_revalidates_before_transaction()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        string? requested = null;
+
+        var handler = new StubHttpHandler(request =>
+        {
+            requested = request.RequestUri?.PathAndQuery;
+            var body = new JsonObject
+            {
+                ["source"] = "khs0927/Ontology",
+                ["canonical"] = false,
+                ["read_only"] = true,
+                ["result"] = new JsonObject
+                {
+                    ["route"] = "GLOBAL_MEMORY",
+                    ["query"] = "door near lobby",
+                    ["hits"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["project_id"] = "P-GOLDEN",
+                            ["object_id"] = "aec://object/door-golden",
+                            ["type"] = "Door",
+                            ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                            ["score"] = 0.99,
+                        },
+                    },
+                },
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var sion = new SionAecClient(new HttpClient(handler), new Uri("http://127.0.0.1:8000/"));
+        var store = new OntologyCandidateStore();
+        var context = new OntologyContextTools(gateway, sion, store);
+
+        var query = Obj(await context.Query("door near lobby", project_id: "P-GOLDEN", max_choices: 5));
+        Assert.Contains("/api/v1/aec/query?", requested);
+        Assert.Contains("project_id=P-GOLDEN", requested);
+        Assert.False(query["may_execute_mutation"]!.GetValue<bool>());
+
+        var selected = Obj(await context.Select(query["context_id"]!.GetValue<string>(), 1));
+        var chosen = selected["selected"]!.AsObject();
+        Assert.Equal(handle, chosen["handle"]!.GetValue<string>());
+        var fingerprint = chosen["fingerprint"]!.GetValue<string>();
+
+        var preview = Obj(await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000, dry_run: true));
+        Assert.False(preview["committed"]!.GetValue<bool>());
+
+        var applied = Obj(await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000));
+        Assert.True(applied["committed"]!.GetValue<bool>());
+        Assert.True(applied["checks_passed"]!.GetValue<int>() > 0);
+    }
+
+    [Fact]
+    public async Task Sion_client_rejects_context_not_marked_read_only()
+    {
+        var handler = new StubHttpHandler(_ =>
+        {
+            var body = new JsonObject
+            {
+                ["canonical"] = true,
+                ["read_only"] = false,
+                ["result"] = new JsonObject(),
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new SionAecClient(new HttpClient(handler), new Uri("http://127.0.0.1:8000/"));
+
+        var ex = await Assert.ThrowsAsync<McpException>(() =>
+            client.QueryGlobalMemoryAsync("door", 5, null, CancellationToken.None));
+        Assert.StartsWith("[SION_CONTRACT]", ex.Message);
+    }
+
+    [Fact]
+    public async Task Ontology_context_selection_rejects_stale_live_entity()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var fingerprint = door["fingerprint"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-1",
+                    ["object_id"] = "aec://object/door-1",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 1.0,
+                },
+            },
+        };
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
+        var query = Obj(await context.Query("door"));
+
+        _ = await cad.ModifyOpening(handle, expect_fingerprint: fingerprint, width: 1000);
+        var ex = await Assert.ThrowsAsync<McpException>(() => context.Select(query["context_id"]!.GetValue<string>(), 1));
+        Assert.StartsWith("[STALE_CONTEXT]", ex.Message);
     }
 
     [Fact]
@@ -90,7 +341,7 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_block_library", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_query", "cad_replace_text", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
+            ["cad_batch", "cad_block_library", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_query", "cad_replace_text", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
 
