@@ -14,7 +14,7 @@ public sealed record ServerOptions(bool Simulate, string? Target, bool ReadOnly,
 
     public const string Instructions = """
         Power CAD controls a live AutoCAD 2027 drawing through an in-process plugin.
-        Operating procedure: (1) cad_status, then cad_inspect / cad_layers to learn the drawing's own
+        Operating procedure: (1) cad_status, cad_get_document_identity, cad_bind_document; then cad_inspect / cad_layers to learn the drawing's own
         layers, text styles, dimension styles, linetypes and blocks - reuse them instead of inventing new ones.
         (2) Find targets with narrow cad_query filters (group_by for an overview) and note each handle +
         fingerprint. (3) For edits pass expect_fingerprint (and expect_text for text) so stale analyses are
@@ -24,6 +24,8 @@ public sealed record ServerOptions(bool Simulate, string? Target, bool ReadOnly,
         Tools: cad_create (line, polyline, circle, arc, text, mtext, insert, point, dimension, hatch; color/
         linetype/lineweight/justify/style), cad_set_properties, cad_copy, cad_transform (rotate/scale/mirror),
         cad_move, cad_delete, cad_replace_text, cad_modify_opening, cad_set_layer, cad_zoom, cad_snapshot.
+        Prefer cad_extract_snapshot -> cad_query_page -> cad_plan_create -> cad_plan_execute(dry_run=true)
+        -> cad_plan_execute(dry_run=false) for reviewed multi-step work. Snapshots are frozen and bounded.
         Use cad_batch for multi-step edits that must succeed together. Never unlock layers, delete the user's
         existing entities or widen max_changes without asking the user.
         """;

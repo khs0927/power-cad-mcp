@@ -5,27 +5,27 @@ namespace PowerCad.Core.Model;
 /// <summary>A drawing that can run work inside one database transaction (AutoCAD or simulated).</summary>
 public interface ICadDocument
 {
-    JsonObject Describe();
+    JsonObject Describe(string? expectedDocumentId = null);
 
     /// <summary>
     /// Runs <paramref name="work"/> inside one transaction. The transaction commits only when
     /// <paramref name="commit"/> is true and <paramref name="work"/> returns normally; any exception
     /// aborts it, so a failed verification leaves the drawing untouched.
     /// </summary>
-    T Execute<T>(Func<ICadTransaction, T> work, bool commit);
+    T Execute<T>(Func<ICadTransaction, T> work, bool commit, string? expectedDocumentId = null);
 
     /// <summary>
     /// Zooms the active view to the window (no database change). When <paramref name="snapshotWidth"/> is
     /// set, also renders the view and returns it as a base64 PNG under "image_base64".
     /// </summary>
-    JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight);
+    JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight, string? expectedDocumentId = null);
 
     /// <summary>
     /// Writes the drawing to disk. With <see cref="SaveRequest.Copy"/> a copy goes to the given path and the
     /// open document is untouched; otherwise the open document itself is saved (DWG only). The dispatcher
     /// has already validated the path, format, overwrite and user-confirmation rules.
     /// </summary>
-    JsonObject Save(SaveRequest request);
+    JsonObject Save(SaveRequest request, string? expectedDocumentId = null);
 }
 
 /// <summary>A validated save request. Path is absolute; Format is "dwg" or "dxf".</summary>

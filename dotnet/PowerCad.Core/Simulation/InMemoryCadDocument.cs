@@ -15,6 +15,8 @@ public sealed class InMemoryCadDocument : ICadDocument
     private readonly Lock _lock = new();
     private Store _store = new();
 
+    public string DocumentId { get; } = Guid.NewGuid().ToString("N");
+
     public string Name { get; set; } = "Simulated.dwg";
 
     /// <summary>Test hook imitating CAD-side behaviour (e.g. a font that cannot store some characters).</summary>
@@ -22,12 +24,16 @@ public sealed class InMemoryCadDocument : ICadDocument
 
     public int CommitCount { get; private set; }
 
-    public JsonObject Describe()
+    public JsonObject Describe(string? expectedDocumentId = null)
     {
         lock (_lock)
         {
+            DocumentBinding.Verify(DocumentId, expectedDocumentId);
             return new JsonObject
             {
+                ["document_id"] = DocumentId,
+                ["session_id"] = $"simulator-{Environment.ProcessId}",
+                ["identity_scope"] = "open_database",
                 ["backend"] = "simulator",
                 ["application"] = "Power CAD in-memory simulator",
                 ["document"] = Name,
@@ -39,10 +45,11 @@ public sealed class InMemoryCadDocument : ICadDocument
         }
     }
 
-    public T Execute<T>(Func<ICadTransaction, T> work, bool commit)
+    public T Execute<T>(Func<ICadTransaction, T> work, bool commit, string? expectedDocumentId = null)
     {
         lock (_lock)
         {
+            DocumentBinding.Verify(DocumentId, expectedDocumentId);
             var working = _store.Clone();
             var result = work(new Tx(working, this));
             if (commit)
@@ -61,8 +68,9 @@ public sealed class InMemoryCadDocument : ICadDocument
 
     public (Vec3 Min, Vec3 Max)? LastView { get; private set; }
 
-    public JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight)
+    public JsonObject View(Vec3 min, Vec3 max, int? snapshotWidth, int? snapshotHeight, string? expectedDocumentId = null)
     {
+        DocumentBinding.Verify(DocumentId, expectedDocumentId);
         LastView = (min, max);
         var o = new JsonObject { ["zoomed"] = true };
         if (snapshotWidth is not null)
@@ -78,8 +86,9 @@ public sealed class InMemoryCadDocument : ICadDocument
     }
 
     /// <summary>The simulator has no DWG writer: it writes its entities as JSON to the requested path.</summary>
-    public JsonObject Save(SaveRequest request)
+    public JsonObject Save(SaveRequest request, string? expectedDocumentId = null)
     {
+        DocumentBinding.Verify(DocumentId, expectedDocumentId);
         var path = request.Path ?? (Path.IsPathFullyQualified(Name)
             ? Name
             : throw new CadException(ErrorCodes.InvalidParams, "This drawing has never been saved.", "Give 'path' for the first save."));

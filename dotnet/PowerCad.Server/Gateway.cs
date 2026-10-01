@@ -92,7 +92,8 @@ public sealed class PipeGateway(DiscoveryStore store, string? pinnedTarget, bool
             }
 
             var target = _pinned is null
-                ? live[0]
+                ? live.Count == 1 ? live[0] : throw new CadException(ErrorCodes.TargetAmbiguous,
+                    "Several AutoCAD sessions are running.", "Use cad_list_targets and cad_select_target before reading a drawing.")
                 : live.FirstOrDefault(i => string.Equals(i.Target, _pinned, StringComparison.OrdinalIgnoreCase) || i.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture) == _pinned)
                     ?? throw new CadException(ErrorCodes.NotFound, $"Target '{_pinned}' is not running.", "Call cad_list_targets.");
             _client = new PipeClient(target);

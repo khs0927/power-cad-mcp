@@ -58,6 +58,15 @@ public sealed partial class CadTools(ICadGateway gateway)
     [Description("Connection and drawing status: backend (autocad/simulator), document name, entity count, available commands. Call first.")]
     public Task<string> Status(CancellationToken ct) => Call("status", [], ct);
 
+    [McpServerTool(Name = "cad_get_document_identity", ReadOnly = true, Idempotent = true)]
+    [Description("Get the current open database's document_id and session_id. The ID changes on reopen and is not a canonical source ID.")]
+    public Task<string> DocumentIdentity(CancellationToken ct = default) => Call("document_identity", [], ct);
+
+    [McpServerTool(Name = "cad_bind_document", ReadOnly = true, Idempotent = true)]
+    [Description("Bind this client to the document_id just read. Required before edits, saves and exports. A document switch then fails instead of reusing handles in another drawing.")]
+    public Task<string> BindDocument(string document_id, CancellationToken ct = default) =>
+        Call("bind_document", new JsonObject { ["document_id"] = document_id }, ct);
+
     [McpServerTool(Name = "cad_list_targets", ReadOnly = true, Idempotent = true)]
     [Description("List running AutoCAD sessions that have the Power CAD plugin loaded.")]
     public string ListTargets() => gateway.ListTargets().ToJsonString(CadJson.Options);

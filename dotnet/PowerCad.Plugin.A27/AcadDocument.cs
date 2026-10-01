@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Runtime.CompilerServices;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -16,7 +17,15 @@ namespace PowerCad.Plugin;
 /// </summary>
 internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) : ICadDocument
 {
-    public JsonObject Describe() => invoker.Invoke(
+    private sealed class OpenDatabaseIdentity
+    {
+        public string Id { get; } = Guid.NewGuid().ToString("N");
+    }
+
+    private static readonly ConditionalWeakTable<Database, OpenDatabaseIdentity> Identities = new();
+    private static string Identity(Database db) => Identities.GetValue(db, _ => new OpenDatabaseIdentity()).Id;
+
+    public JsonObject Describe(string? expectedDocumentId = null) => invoker.Invoke(
         () =>
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument;
@@ -31,11 +40,18 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
             };
             if (doc is null)
             {
+                if (expectedDocumentId is not null)
+                    throw new CadException(ErrorCodes.DocumentChanged, "The bound drawing is no longer active.");
                 info["document"] = null;
                 return info;
             }
 
             var db = doc.Database;
+            DocumentBinding.Verify(Identity(db), expectedDocumentId);
+            info["document_id"] = Identity(db);
+            info["session_id"] = $"autocad-2027-{Environment.ProcessId}";
+            info["database_fingerprint"] = db.FingerprintGuid.ToString();
+            info["identity_scope"] = "open_database";
             info["document"] = doc.Name;
             info["units"] = db.Insunits.ToString();
             using var tr = db.TransactionManager.StartOpenCloseTransaction();
@@ -48,7 +64,7 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
         },
         timeout);
 
-    public T Execute<T>(Func<ICadTransaction, T> work, bool commit) => invoker.Invoke(
+    public T Execute<T>(Func<ICadTransaction, T> work, bool commit, string? expectedDocumentId = null) => invoker.Invoke(
         () =>
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument
@@ -56,7 +72,7 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
             DocumentLockGuard docLock;
             try
             {
-                docLock = new DocumentLockGuard(doc.LockDocument());
+                docLock = new DocumentLockGuard(doc.LockDocument(DocumentLockMode.Write, "POWERCAD_EDIT", "POWERCAD_EDIT", false));
             }
             catch (Autodesk.AutoCAD.Runtime.Exception e) when (e.ErrorStatus == ErrorStatus.LockViolation)
             {
@@ -65,6 +81,7 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
 
             using (docLock)
             {
+                DocumentBinding.Verify(Identity(doc.Database), expectedDocumentId);
                 var db = doc.Database;
                 using var tr = db.TransactionManager.StartTransaction();
                 try
@@ -96,7 +113,7 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
         },
         timeout);
 
-    public JsonObject View(PowerCad.Core.Model.Vec3 min, PowerCad.Core.Model.Vec3 max, int? snapshotWidth, int? snapshotHeight) => invoker.Invoke(
+    public JsonObject View(PowerCad.Core.Model.Vec3 min, PowerCad.Core.Model.Vec3 max, int? snapshotWidth, int? snapshotHeight, string? expectedDocumentId = null) => invoker.Invoke(
         () =>
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument
@@ -108,6 +125,7 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
 
             using (doc.LockDocument())
             {
+                DocumentBinding.Verify(Identity(doc.Database), expectedDocumentId);
                 var ed = doc.Editor;
                 using var view = ed.GetCurrentView();
                 var wcsToDcs = (Matrix3d.PlaneToWorld(view.ViewDirection)
@@ -177,13 +195,14 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
         },
         timeout);
 
-    public JsonObject Save(SaveRequest request) => invoker.Invoke(
+    public JsonObject Save(SaveRequest request, string? expectedDocumentId = null) => invoker.Invoke(
         () =>
         {
             var doc = AcApp.DocumentManager.MdiActiveDocument
                 ?? throw new CadException(ErrorCodes.NoDocument, "No drawing is open in AutoCAD.", "Open or create a drawing first.");
             using (doc.LockDocument())
             {
+                DocumentBinding.Verify(Identity(doc.Database), expectedDocumentId);
                 var db = doc.Database;
                 string path;
                 if (request.Copy)

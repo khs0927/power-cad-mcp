@@ -6,7 +6,7 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 | 구성 | 위치 | 용도 |
 | --- | --- | --- |
 | **power-cad-server + AutoCAD 2027 플러그인 (C#/.NET 10, 주력)** | [`dotnet/`](dotnet) | 실도면 수정. AutoCAD 내부에서 트랜잭션으로 실행하고, 수정 직전 대상 확인·수정 직후 자동 검증·실패 시 롤백 |
-| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도(41개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기 |
+| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기 |
 | best-cad-mcp (외부, 선택) | `uvx --from best-cad-mcp cad-mcp` | 도면 의미·객체 관계 분석 — 별도 MCP 서버로 함께 연결 |
 
 - 설계 문서: [프레임워크](docs/framework/AutoCAD2027_Framework.md) · [운영 지침(ASTRA)](docs/framework/ASTRA_CAD_Operating_Playbook.md) ·
@@ -18,10 +18,11 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 30개:
+도구 38개 (C# 0.5.0 preview):
 
 | 분류 | 도구 |
 | --- | --- |
+| 프레임워크 | `cad_get_document_identity`, `cad_bind_document`, `cad_extract_snapshot`, `cad_query_page`, `cad_review_snapshot`, `cad_plan_create`, `cad_plan_get`, `cad_plan_execute` |
 | 의미 컨텍스트 | `cad_context_query`, `cad_context_select`, `cad_context_actions`, `cad_context_action_select` |
 | 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
 | 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
@@ -42,7 +43,7 @@ AutoCAD가 명령·대화상자로 바쁘면 20초 안에 `CAD_BUSY`로 답합�
 ### 설치 (Windows, AutoCAD 2027)
 
 ```powershell
-git clone -b feat/full-toolset https://github.com/khs0927/power-cad-mcp
+git clone -b codex/framework-integration https://github.com/khs0927/power-cad-mcp
 cd power-cad-mcp
 powershell -ExecutionPolicy Bypass -File scripts\install_autocad_plugin.ps1
 ```
@@ -63,12 +64,26 @@ dotnet test dotnet/PowerCad.Tests
 
 ---
 
+## Codex 연결
+
+`OpenAI Docs`의 [MCP 등록 안내](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)에 따라 빌드된 서버를 등록합니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\register_codex.ps1
+```
+
+개발용 시뮬레이터는 `-Name power-cad-dev -Simulate`로 별도 등록할 수 있습니다.
+등록 전에 새 플러그인도 설치해야 실제 도면에서 새 계약을 사용할 수 있습니다.
+
+새 서버에서는 `cad_get_document_identity`로 현재 도면 ID를 읽고 `cad_bind_document`로 고정한 뒤 수정합니다.
+자세한 개발 상태·사용 순서·인수 조건은 [프레임워크 운영 문서](docs/framework/FRAMEWORK_IMPLEMENTATION.md)를 참조하세요.
+
 ## 보조: power-cad-mcp (Python)
 
 - **AutoCAD 백엔드 (Windows)** — 실행 중인 AutoCAD에 COM으로 붙어 실시간으로 그립니다.
 - **Headless DXF 백엔드 (모든 OS)** — AutoCAD 없이 [ezdxf](https://ezdxf.mozman.at/)로 도면을 만들고 DXF/PNG/PDF/SVG로 저장합니다.
 
-두 백엔드는 같은 41개 도구를 제공합니다.
+두 백엔드는 같은 42개 도구를 제공합니다.
 
 ![demo](docs/floor_plan.png)
 
@@ -76,7 +91,7 @@ dotnet test dotnet/PowerCad.Tests
 
 | 분류 | 도구 |
 | --- | --- |
-| 세션/파일 | `cad_status`, `new_drawing`, `open_drawing`, `save_drawing`, `get_drawing_info`, `export_drawing`, `render_preview` |
+| 세션/파일 | `drawing_census`, `cad_status`, `new_drawing`, `open_drawing`, `save_drawing`, `get_drawing_info`, `export_drawing`, `render_preview` |
 | 레이어 | `list_layers`, `create_layer`, `update_layer`, `set_current_layer`, `delete_layer` |
 | 작도 | `draw_line`, `draw_polyline`, `draw_rectangle`, `draw_polygon`, `draw_circle`, `draw_arc`, `draw_ellipse`, `draw_point`, `add_text`, `add_mtext`, `add_dimension`, `add_hatch`, **`draw_batch`** |
 | 블록 | `list_blocks`, `create_block`, `insert_block` |

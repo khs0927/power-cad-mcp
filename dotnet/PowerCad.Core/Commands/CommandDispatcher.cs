@@ -20,7 +20,7 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
 
     public static readonly IReadOnlyList<string> Commands =
     [
-        "status", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
+        "status", "document_identity", "extract_snapshot", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
         "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch",
         "export_block", "import_block", "export_hatch_pattern", "save",
     ];
@@ -35,7 +35,13 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
 
     public JsonNode Execute(string command, JsonObject? parameters)
     {
-        var p = new Params(parameters);
+        var p = new Params(parameters?.DeepClone() as JsonObject);
+        if (p.Has("expected_document_id"))
+        {
+            var id = p.String("expected_document_id");
+            p.Node.Remove("expected_document_id");
+            return new CommandDispatcher(new BoundCadDocument(document, id), _options).Execute(command, p.Node);
+        }
         if (Mutating.Contains(command) && _options.ReadOnly)
         {
             throw new CadException(ErrorCodes.ReadOnly, "The server runs in read-only mode.", "Restart without --read-only to allow edits.");
@@ -44,6 +50,8 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
         return command switch
         {
             "status" => Status(),
+            "document_identity" => document.Describe(),
+            "extract_snapshot" => document.Execute(tx => ExtractSnapshot(tx, p), commit: false),
             "query" => document.Execute(tx => Query(tx, p), commit: false),
             "get" => document.Execute(tx => Get(tx, p), commit: false),
             "inspect" => document.Execute(tx => Inspect(tx, p), commit: false),

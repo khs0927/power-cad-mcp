@@ -341,9 +341,14 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_block_library", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_get", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_query", "cad_replace_text", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
+            ["cad_batch", "cad_bind_document", "cad_block_library", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_copy", "cad_create", "cad_delete", "cad_export_block", "cad_export_hatch_pattern", "cad_extract_snapshot", "cad_get", "cad_get_document_identity", "cad_import_block", "cad_inspect", "cad_layers", "cad_list_targets", "cad_measure", "cad_modify_opening", "cad_move", "cad_offset", "cad_plan_create", "cad_plan_execute", "cad_plan_get", "cad_query", "cad_query_page", "cad_replace_text", "cad_review_snapshot", "cad_save", "cad_select_target", "cad_set_layer", "cad_set_properties", "cad_snapshot", "cad_status", "cad_transform", "cad_zoom"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
+
+        var identity = await client.CallToolAsync("cad_get_document_identity");
+        var documentId = Obj(((TextContentBlock)identity.Content[0]).Text)["document_id"]!.GetValue<string>();
+        var bound = await client.CallToolAsync("cad_bind_document", new Dictionary<string, object?> { ["document_id"] = documentId });
+        Assert.NotEqual(true, bound.IsError);
 
         var status = await client.CallToolAsync("cad_status");
         Assert.NotEqual(true, status.IsError);

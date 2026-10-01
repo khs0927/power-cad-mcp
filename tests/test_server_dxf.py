@@ -253,3 +253,14 @@ async def test_run_command_headless_and_blocked(call):
     assert "AutoCAD (COM) backend" in await call.error("run_command", command="LINE 0,0 1,1 ")
     assert "blocked" in await call.error("run_command", command="_.SHELL dir")
     assert "AutoLISP" in await call.error("run_command", command='(command "LINE")')
+
+
+async def test_drawing_census_tool(call, tmp_path):
+    doc = ezdxf.new()
+    doc.modelspace().add_line((0, 0), (1, 1), dxfattribs={"layer": "수상한레이어"})
+    src = tmp_path / "plan.dxf"
+    doc.saveas(src)
+    std = os.path.join(os.path.dirname(__file__), "..", "docs", "standards", "floor_plan_standard.json")
+    r = await call("drawing_census", path=str(src), standard=std)
+    assert r["completeness"]["complete"] and r["unmapped_layers"] == ["수상한레이어"]
+    assert os.path.exists(r["report"]) and r["report"].startswith(str(tmp_path / "plan_census"))

@@ -27,6 +27,7 @@ All edits run inside one undo group: a single AutoCAD UNDO reverts the whole pla
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import sys
@@ -151,10 +152,8 @@ def copy_props(src, dst) -> None:
     dst.Linetype = src.Linetype
     dst.Lineweight = src.Lineweight
     dst.TrueColor = src.TrueColor
-    try:
+    with contextlib.suppress(Exception):  # mixed widths may not expose ConstantWidth
         dst.ConstantWidth = src.ConstantWidth
-    except Exception:  # noqa: BLE001 - mixed widths
-        pass
 
 
 def apply(doc, plan) -> list[dict[str, Any]]:
@@ -207,7 +206,10 @@ def apply(doc, plan) -> list[dict[str, Any]]:
                 dim = ms.AddDimAligned(vpt(op["p1"]), vpt(op["p2"]), vpt(op["line_point"]))
             else:
                 dim = ms.AddDimRotated(
-                    vpt(op["p1"]), vpt(op["p2"]), vpt(op["line_point"]), math.radians(op.get("rotation_deg", 0))
+                    vpt(op["p1"]),
+                    vpt(op["p2"]),
+                    vpt(op["line_point"]),
+                    math.radians(op.get("rotation_deg", 0)),
                 )
             if op.get("style"):
                 dim.StyleName = op["style"]
@@ -270,8 +272,17 @@ def main() -> int:
         log = apply(doc, plan)
     except Exception as exc:  # noqa: BLE001
         doc.EndUndoMark()
-        print(json.dumps({"ok": False, "stage": "apply", "error": str(exc),
-                          "recover": "run UNDO once in AutoCAD to revert this plan"}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "stage": "apply",
+                    "error": str(exc),
+                    "recover": "run UNDO once in AutoCAD to revert this plan",
+                },
+                ensure_ascii=False,
+            )
+        )
         return 3
     doc.EndUndoMark()
     doc.Regen(1)

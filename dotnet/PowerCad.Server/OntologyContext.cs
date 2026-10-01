@@ -272,17 +272,17 @@ public sealed record CadContextAction(
     string Description,
     bool Mutating);
 
-internal sealed record OntologyCandidateSpace(DateTimeOffset CreatedAt, IReadOnlyList<OntologyCandidate> Options);
+internal sealed record OntologyCandidateSpace(DateTimeOffset CreatedAt, string DocumentId, IReadOnlyList<OntologyCandidate> Options);
 
 public sealed class OntologyCandidateStore
 {
     private static readonly TimeSpan CandidateTtl = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<string, OntologyCandidateSpace> _spaces = new();
 
-    internal string Put(IReadOnlyList<OntologyCandidate> options)
+    internal string Put(string documentId, IReadOnlyList<OntologyCandidate> options)
     {
         var contextId = Guid.NewGuid().ToString("N");
-        _spaces[contextId] = new OntologyCandidateSpace(DateTimeOffset.UtcNow, options);
+        _spaces[contextId] = new OntologyCandidateSpace(DateTimeOffset.UtcNow, documentId, options);
         Prune();
         return contextId;
     }
@@ -372,7 +372,7 @@ public sealed partial class OntologyContextTools(
         var selected = space.Options.SingleOrDefault(option => option.Choice == choice)
             ?? throw new McpException("[INVALID_CHOICE] choice is outside the live-verified candidate space.");
 
-        var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(selected.Handle) }, ct).ConfigureAwait(false) as JsonObject;
+        var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(selected.Handle), ["expected_document_id"] = space.DocumentId }, ct).ConfigureAwait(false) as JsonObject;
         var entity = (live?["entities"] as JsonArray)?.FirstOrDefault() as JsonObject
             ?? throw new McpException("[STALE_CONTEXT] The selected CAD entity no longer exists.");
         var currentFingerprint = entity["fingerprint"]?.GetValue<string>();
@@ -407,6 +407,9 @@ public sealed partial class OntologyContextTools(
             throw new McpException("[ONTOLOGY_UNAVAILABLE] Ontology context is not configured.");
         }
 
+        var identity = await gateway.SendAsync("document_identity", null, ct).ConfigureAwait(false);
+        var documentId = identity?["document_id"]?.GetValue<string>()
+            ?? throw new McpException("[PLUGIN_OUTDATED] Document identity is required for semantic context.");
         var memory = await ontology.QueryGlobalMemoryAsync(question, Math.Min(max_choices * 4, 100), project_id, ct).ConfigureAwait(false);
         var hits = memory["hits"] as JsonArray ?? [];
         var handles = new List<(string Handle, JsonObject Hit)>();
@@ -433,7 +436,7 @@ public sealed partial class OntologyContextTools(
         var options = new List<OntologyCandidate>();
         foreach (var (handle, hit) in handles)
         {
-            var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(handle) }, ct).ConfigureAwait(false) as JsonObject;
+            var live = await gateway.SendAsync("get", new JsonObject { ["handles"] = StringArray(handle), ["expected_document_id"] = documentId }, ct).ConfigureAwait(false) as JsonObject;
             var entity = (live?["entities"] as JsonArray)?.FirstOrDefault() as JsonObject;
             if (entity is null)
             {
@@ -462,12 +465,13 @@ public sealed partial class OntologyContextTools(
             }
         }
 
-        var contextId = candidateStore.Put(options);
+        var contextId = candidateStore.Put(documentId, options);
 
         return new JsonObject
         {
             ["status"] = "SUCCESS",
             ["context_id"] = contextId,
+            ["document_id"] = documentId,
             ["ontology_route"] = memory["route"]?.DeepClone(),
             ["query"] = question,
             ["options"] = JsonSerializer.SerializeToNode(options, CadJson.Options),
