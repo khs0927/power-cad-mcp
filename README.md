@@ -18,9 +18,9 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 10개: `cad_status`, `cad_list_targets`, `cad_select_target`, `cad_query`, `cad_get`,
+도구 14개: `cad_status`, `cad_list_targets`, `cad_select_target`, `cad_query`, `cad_get`,
 `cad_replace_text`(문자 변경), `cad_move`(객체 이동), `cad_modify_opening`(문·창·개구부 폭/위치/회전/반전/속성),
-`cad_create`, `cad_batch`(최대 20단계 원자적 실행).
+`cad_create`, `cad_batch`(최대 20단계 원자적 실행), `cad_context_query`, `cad_context_select`, `cad_context_actions`, `cad_context_action_select`.
 
 모든 수정은 같은 절차를 거칩니다: **지문으로 대상 확인 → 한 트랜잭션에서 변경 → 변경된 대상만 재검증 → 실패 시 전체 롤백 → before/after 보고**.
 `dry_run: true`로 실제와 같은 조건의 미리보기를 받을 수 있습니다.
@@ -134,7 +134,7 @@ python scripts\smoke_test_autocad.py                         # 새 도면에 테
 | `POWER_CAD_ONTOLOGY_COMMAND` | `aec-mcp` | Ontology MCP 실행 명령. ROOT가 설정된 경우 기본값 사용 |
 | `POWER_CAD_ONTOLOGY_TIMEOUT` | `20` | Ontology stdio 호출 제한시간(초, 1–120) |
 | `POWER_CAD_SION_URL` | – | Sion Ontology Platform의 HTTP base URL. 설정 시 Sion AEC federation을 우선 사용 |
-| `POWER_CAD_SION_TIMEOUT` | `20` | Sion AEC HTTP 호출 제한시간(초, 1–120) |
+| `POWER_CAD_SION_TIMEOUT` | `20` | Sion AEC HTTP 호출 제한시간(초, 1–120) |\n| `POWER_CAD_SION_TOKEN` | – | 원격 Sion 호출용 Bearer token. loopback이 아닌 Sion URL에는 필수 |
 
 CLI 옵션: `power-cad-mcp [--backend auto|autocad|dxf] [--workspace DIR] [--dxf-path FILE] [--launch]
 [--transport stdio|streamable-http|sse --host 127.0.0.1 --port 8765] [--check] [--version]`
@@ -153,7 +153,9 @@ Sion 경로에서는 응답이 반드시 `canonical=false`, `read_only=true`여�
 3. 후보마다 현재 AutoCAD에 `cad_get`을 호출해 실제 존재와 fingerprint를 검증합니다.
 4. 결과는 1, 2, 3… 번호가 붙은 `context_id` candidate space로 반환됩니다.
 5. `cad_context_select(context_id, choice)`가 선택 시점에 fingerprint를 **다시 검증**합니다.
-6. 선택 결과는 `may_execute_mutation=false`이며, 실제 수정은 기존 `cad_move`, `cad_modify_opening` 등의 `expect_fingerprint` 경계를 그대로 거쳐야 합니다.
+6. `cad_context_actions(context_id, candidate_choice)`가 현재 live entity에 허용되는 작업만 번호형 action-space로 반환합니다.
+7. `cad_context_action_select(..., action_choice)`가 번호를 실제 `cad_get` / `cad_move` / `cad_replace_text` / `cad_modify_opening` 중 하나로 해석하면서 fingerprint를 다시 검증합니다.
+8. 후보 선택과 action 선택 모두 `may_execute_mutation=false`입니다. 실제 수정은 기존 edit tool의 `expect_fingerprint`와 transaction/rollback 경계를 그대로 거쳐야 합니다.
 
 골든 경로는 `Ontology → Sion AEC federation → Power CAD live verification → AutoCAD transaction/rollback`입니다. Ontology/GraphRAG/Sion 결과가 직접 AutoCAD를 수정할 수 없고, 오래된 지식이나 잘못된 매핑은 live CAD 재검증 단계에서 차단됩니다.
 
