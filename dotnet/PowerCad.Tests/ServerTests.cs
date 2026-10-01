@@ -97,6 +97,88 @@ public sealed class ServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Ontology_context_exposes_numbered_live_action_space()
+    {
+        var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
+        var cad = new CadTools(gateway);
+        var door = Obj(await cad.Query(block_name: "DOOR*"))["entities"]![0]!.AsObject();
+        var handle = door["handle"]!.GetValue<string>();
+        var memory = new JsonObject
+        {
+            ["route"] = "GLOBAL_MEMORY",
+            ["hits"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["project_id"] = "P-ACTION",
+                    ["object_id"] = "aec://object/door-action",
+                    ["type"] = "Door",
+                    ["geometry_ref"] = $"aec://artifact/source/geometry/{handle}",
+                    ["score"] = 1.0,
+                },
+            },
+        };
+        var context = new OntologyContextTools(gateway, new FakeOntologyClient(memory), new OntologyCandidateStore());
+        var query = Obj(await context.Query("door"));
+        var contextId = query["context_id"]!.GetValue<string>();
+
+        var actions = Obj(await context.Actions(contextId, 1));
+        Assert.False(actions["may_execute_mutation"]!.GetValue<bool>());
+        var operations = actions["actions"]!.AsArray()
+            .Select(row => row!["operation"]!.GetValue<string>())
+            .ToArray();
+        Assert.Equal(["cad_get", "cad_move", "cad_modify_opening"], operations);
+
+        var selected = Obj(await context.SelectAction(contextId, 1, 3));
+        Assert.Equal("cad_modify_opening", selected["selected_action"]!["operation"]!.GetValue<string>());
+        Assert.False(selected["may_execute_mutation"]!.GetValue<bool>());
+        Assert.True(selected["requires_edit_tool_with_expect_fingerprint"]!.GetValue<bool>());
+
+        var invalid = await Assert.ThrowsAsync<McpException>(() => context.SelectAction(contextId, 1, 99));
+        Assert.StartsWith("[INVALID_ACTION]", invalid.Message);
+    }
+
+    [Fact]
+    public async Task Sion_client_sends_bearer_token_when_configured()
+    {
+        string? authorization = null;
+        var handler = new StubHttpHandler(request =>
+        {
+            authorization = request.Headers.Authorization?.ToString();
+            var body = new JsonObject
+            {
+                ["canonical"] = false,
+                ["read_only"] = true,
+                ["result"] = new JsonObject
+                {
+                    ["route"] = "GLOBAL_MEMORY",
+                    ["query"] = "door",
+                    ["hits"] = new JsonArray(),
+                },
+            };
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
+            };
+        });
+        var client = new SionAecClient(
+            new HttpClient(handler),
+            new Uri("https://sion.example/"),
+            "remote-sion-token-123456789");
+
+        _ = await client.QueryGlobalMemoryAsync("door", 5, null, CancellationToken.None);
+        Assert.Equal("Bearer remote-sion-token-123456789", authorization);
+    }
+
+    [Fact]
+    public void Remote_Sion_configuration_requires_token()
+    {
+        var ex = Assert.Throws<McpException>(() =>
+            ContextClientFactory.FromEnvironment(name => name == "POWER_CAD_SION_URL" ? "https://sion.example/" : null));
+        Assert.StartsWith("[SION_CONFIG]", ex.Message);
+    }
+
+    [Fact]
     public async Task Golden_Sion_to_PowerCad_context_path_revalidates_before_transaction()
     {
         var gateway = new SimulatorGateway(InMemoryCadDocument.CreateSample(), readOnly: false);
@@ -259,7 +341,7 @@ public sealed class ServerTests : IDisposable
         await using var client = await McpClient.CreateAsync(transport);
         var tools = await client.ListToolsAsync();
         Assert.Equal(
-            ["cad_batch", "cad_context_query", "cad_context_select", "cad_create", "cad_get", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_status"],
+            ["cad_batch", "cad_context_action_select", "cad_context_actions", "cad_context_query", "cad_context_select", "cad_create", "cad_get", "cad_list_targets", "cad_modify_opening", "cad_move", "cad_query", "cad_replace_text", "cad_select_target", "cad_status"],
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
 
