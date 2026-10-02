@@ -406,8 +406,9 @@ def test_client_http_errors(fake_url):
 
 def test_client_service_down(dead_url):
     # Linux refuses a closed port at once; Windows retries the connect until the timeout.
-    with pytest.raises(OntologyUnavailable,
-                       match=r"not reachable.*POWERCAD_ONTOLOGY_URL|did not answer within 2s"):
+    with pytest.raises(
+        OntologyUnavailable, match=r"not reachable.*POWERCAD_ONTOLOGY_URL|did not answer within 2s"
+    ):
         OntologyClient(dead_url, timeout=2).catalog()
 
 
