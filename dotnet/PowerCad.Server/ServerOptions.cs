@@ -26,6 +26,7 @@ public sealed record ServerOptions(bool Simulate, string? Target, bool ReadOnly,
         cad_move, cad_delete, cad_replace_text, cad_modify_opening, cad_set_layer, cad_zoom, cad_snapshot.
         Prefer cad_extract_snapshot -> cad_query_page -> cad_plan_create -> cad_plan_execute(dry_run=true)
         -> cad_plan_execute(dry_run=false) for reviewed multi-step work. Snapshots are frozen and bounded.
+        cad_inventory lists every layout, block definition, block reference (nested) and XREF read-only.
         Use cad_batch for multi-step edits that must succeed together. Never unlock layers, delete the user's
         existing entities or widen max_changes without asking the user.
         """;

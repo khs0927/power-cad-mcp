@@ -1,12 +1,12 @@
 # Framework preview — 2026-10-02
 
 This branch combines the 26 CAD tools from `feat/full-toolset` and the four
-Ontology/Sion context tools from `main`, then adds eight framework tools.
+Ontology/Sion context tools from `main`, then adds nine framework tools.
 C# package version: `0.5.0-preview.1`. It is a development preview, not a live-CAD acceptance claim.
 
 ## Implemented sequence
 
-1. **Integration**: both histories are merged; all 38 C# MCP tools are registered.
+1. **Integration**: both histories are merged; all 39 C# MCP tools are registered.
 2. **Document binding**: `cad_get_document_identity` returns an ID for one open
    database. `cad_bind_document(document_id)` is required before editing,
    saving or exporting. Each request is checked again inside the plugin's
@@ -29,6 +29,19 @@ C# package version: `0.5.0-preview.1`. It is a development preview, not a live-C
    mismatches and exact duplicate described states. Reports never trigger edits.
    Python `drawing_census` and its CLI provide offline DXF inventories across
    model-space sheets, layouts and block definitions, adapted from PR #3.
+6. **Native inventory**: `cad_inventory` (protocol command `drawing_inventory`,
+   `ICadDocument.GetDrawingInventory`) lists a live drawing's layouts, block
+   definitions, block references and XREFs without the caller naming them. It runs
+   in one transaction that opens objects ForRead and never commits. Layouts report
+   tab order, model/paper, plot device, media, paper units/rotation/size, viewport
+   and entity counts. Block definitions report effective (dynamic parent) name,
+   anonymous/layout/XREF/XREF-dependent flags, attribute definitions, entity counts
+   by DXF type, nested block counts and insert counts per layout. References report
+   handle, block and effective name, position, rotation, scale, layer and attribute
+   values per layout, recursing into nested references to `max_depth` (default 2,
+   max 8) with `depth`, `path` (handles from the layout down), `block_path` and
+   `parent_handle`. XREFs report path, status, `found`, attach/overlay and the nested
+   XREF graph from the host database.
 
 ## Workflow
 
@@ -55,7 +68,21 @@ layer edits, imports and saves are deliberately outside this first plan schema.
   large-drawing extractor or a full-database hash.
 - Layer metadata is also bounded. `resources_truncated` reports omissions.
 - Layouts, block definitions, nested instances and XREF contents are excluded from
-  native snapshots. Unsupported DTOs may only describe part of an object's state.
+  native snapshots; `cad_inventory` lists them separately. Unsupported DTOs may only
+  describe part of an object's state.
+- Inventory limits: `max_blocks` (default 500, max 5000), `max_references`
+  (default 2000, max 10000, nested rows included), `max_depth` and the shared
+  600,000-byte payload budget used by snapshots. Layout rows are always returned;
+  XREF, block and reference rows are dropped in that priority order and reported by
+  `xrefs_truncated`, `blocks_truncated`, `references_truncated` and `depth_limited`.
+  Counts still cover the whole drawing, so every entity of every block table record
+  is opened once; this is not a streaming extractor.
+- Inventory does not open XREF files: XREF contents, their blocks and entity
+  geometry are excluded. Nested reference positions are in the parent block's
+  coordinates, not transformed to the layout. MINSERT and table objects are counted
+  by type but not listed as references. Paper-space viewport counts include the
+  overall layout viewport and are zero for layouts never activated. The simulator
+  exercises the same builder; native AutoCAD behaviour still needs the live gate.
 - Plan JSON and receipts live under `%LOCALAPPDATA%\PowerCad\plans`. Plan IDs are
   UUIDs, not arbitrary paths. File replacement is atomic; execution locks are
   shared across processes.
@@ -76,6 +103,8 @@ bundle; reopen a drawing copy and test:
 - preview rollback, apply, stale-object rejection, locked layers and failed batches;
 - one-request Undo grouping, including dry runs and edits after prior user commands;
 - dimensions, hatch, offset, measurement, viewport snapshots and DWG/DXF copy save;
+- `cad_inventory` on a drawing with dynamic blocks, attributes, nested blocks,
+  several layouts and attached, overlaid, nested and missing XREFs;
 - semantic context with the actual configured Ontology/Sion service and source data.
 
 Named write locks follow PR #3's Undo-group implementation. Compilation and
@@ -91,7 +120,7 @@ This is a startup limitation with an undetermined cause, not successful native
 acceptance. The installed preview bundle still requires the live gate above.
 
 - Canonical source/revision tickets and source-to-native-object resolution.
-- Full native layout/block/XREF extraction and bounded scanning latency.
+- Bounded scanning latency (inventory and snapshots still visit every entity to count it).
 - Wall topology, opening-host relationships, dimensions and unit/coordinate tests
   on representative real drawings; open polylines are not automatically defects.
 - Capability-derived semantic action choices beyond the current four operations.

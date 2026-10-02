@@ -17,7 +17,7 @@ public sealed partial class CommandDispatcher
         var known = new HashSet<string>(["LINE", "LWPOLYLINE", "CIRCLE", "ARC", "TEXT", "MTEXT", "INSERT", "POINT", "DIMENSION", "HATCH", "LEADER"]);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var raw = 0;
-        var bytes = 0;
+        var budget = new PayloadBudget();
         var truncated = false;
         foreach (var entity in tx.ScanModelSpace())
         {
@@ -27,12 +27,10 @@ public sealed partial class CommandDispatcher
                 unsupported[entity.Type] = (unsupported[entity.Type]?.GetValue<int>() ?? 0) + 1;
             hash.AppendData(Encoding.UTF8.GetBytes($"{entity.Handle}:{entity.Fingerprint}\n"));
             var json = entity.ToJson();
-            var size = Encoding.UTF8.GetByteCount(json.ToJsonString(CadJson.Options));
             // Leave room for metadata and the pipe envelope (the transport is capped at 1 MiB).
-            if (entities.Count < max && bytes + size < 600_000)
+            if (entities.Count < max && budget.TryAdd(json, InventoryOptions.DefaultMaxBytes))
             {
                 entities.Add(json);
-                bytes += size;
             }
             else truncated = true;
         }
@@ -43,10 +41,8 @@ public sealed partial class CommandDispatcher
         var layers = new JsonArray();
         foreach (var layer in layerRows.Take(1000))
         {
-            var size = Encoding.UTF8.GetByteCount(layer.ToJsonString(CadJson.Options));
-            if (bytes + size >= 650_000) break;
+            if (!budget.TryAdd(layer, 650_000)) break;
             layers.Add(layer.DeepClone());
-            bytes += size;
         }
         return new JsonObject
         {
@@ -68,5 +64,21 @@ public sealed partial class CommandDispatcher
             ["layer_count"] = layerRows.Count,
             ["resources_truncated"] = layers.Count != layerRows.Count,
         };
+    }
+
+    /// <summary>Read-only layouts, block definitions, block references (nested) and XREFs, bounded like snapshots.</summary>
+    private JsonObject Inventory(Params p)
+    {
+        p.AllowOnly("max_blocks", "max_references", "max_depth");
+        var options = new InventoryOptions(
+            p.Int("max_blocks", 500, 1, DrawingInventory.MaxBlocksLimit),
+            p.Int("max_references", 2000, 1, DrawingInventory.MaxReferencesLimit),
+            p.Int("max_depth", 2, 0, DrawingInventory.MaxDepthLimit));
+        var inventory = document.GetDrawingInventory(options);
+        var identity = document.Describe();
+        inventory["document_id"] = identity["document_id"]?.DeepClone();
+        inventory["session_id"] = identity["session_id"]?.DeepClone();
+        inventory["units"] = identity["units"]?.DeepClone();
+        return inventory;
     }
 }

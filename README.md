@@ -18,7 +18,7 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 38개 (C# 0.5.0 preview):
+도구 39개 (C# 0.5.0 preview):
 
 | 분류 | 도구 |
 | --- | --- |
@@ -26,6 +26,7 @@ Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plug
 | 의미 컨텍스트 | `cad_context_query`, `cad_context_select`, `cad_context_actions`, `cad_context_action_select` |
 | 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
 | 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
+| 인벤토리 | `cad_inventory` — 이름을 몰라도 모든 레이아웃(탭 순서·플롯 장치/용지·뷰포트/객체 수), 블록 정의(동적 블록 실제 이름·익명/레이아웃/XREF 여부·속성 정의·객체 종류별 개수·중첩 블록·레이아웃별 삽입 수), 레이아웃별 블록 참조(핸들·위치·회전·축척·레이어·속성값, 중첩 참조는 `max_depth`(기본 2)까지 경로 표시), XREF(경로·찾음/미해결 상태·부착/오버레이·중첩 그래프)를 읽기 전용으로 나열. XREF 파일은 열지 않으며 `max_blocks`·`max_references`·전송 크기 한도를 넘으면 `*_truncated`로 표시 |
 | 작성 | `cad_create` — line, polyline, circle, arc, text(`justify`·`style`·`width_factor`), mtext, insert, point, **dimension**(rotated/aligned, 스타일·문자 재지정), **hatch**(SOLID·ANSI31 등), 공통 `color`/`linetype`/`lineweight` |
 | 수정 | `cad_replace_text`, `cad_move`, `cad_modify_opening`, `cad_set_properties`(레이어·색·선종류·선가중치·문자 높이/회전/스타일/정렬), `cad_copy`(배열 복사), `cad_transform`(회전·축척·대칭, 문자는 읽히는 방향 유지), `cad_offset`(선·직선 폴리선·원·호 간격띄우기, `count`로 여러 줄), `cad_delete` |
 | 레이어 | `cad_set_layer`(생성·색·선종류·선가중치·켜기/동결/플롯·현재 레이어, 잠금 해제는 사용자 확인 필요) |

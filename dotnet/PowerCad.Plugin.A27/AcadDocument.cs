@@ -199,6 +199,10 @@ internal sealed class AcadDocument(MainThreadInvoker invoker, TimeSpan timeout) 
         },
         timeout);
 
+    /// <summary>Same read path as snapshots: one transaction, objects opened ForRead, always aborted.</summary>
+    public JsonObject GetDrawingInventory(InventoryOptions options, string? expectedDocumentId = null) =>
+        Execute(tx => PowerCad.Core.Commands.DrawingInventory.Build(tx, options), commit: false, expectedDocumentId);
+
     public JsonObject Save(SaveRequest request, string? expectedDocumentId = null) => invoker.Invoke(
         () =>
         {

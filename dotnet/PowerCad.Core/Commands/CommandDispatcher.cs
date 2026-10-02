@@ -20,7 +20,7 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
 
     public static readonly IReadOnlyList<string> Commands =
     [
-        "status", "document_identity", "extract_snapshot", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
+        "status", "document_identity", "extract_snapshot", "drawing_inventory", "query", "get", "inspect", "layers", "measure", "zoom", "snapshot",
         "replace_text", "move", "modify_opening", "create", "delete", "set_properties", "copy", "transform", "offset", "set_layer", "batch",
         "export_block", "import_block", "export_hatch_pattern", "save",
     ];
@@ -52,6 +52,7 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
             "status" => Status(),
             "document_identity" => document.Describe(),
             "extract_snapshot" => document.Execute(tx => ExtractSnapshot(tx, p), commit: false),
+            "drawing_inventory" => Inventory(p),
             "query" => document.Execute(tx => Query(tx, p), commit: false),
             "get" => document.Execute(tx => Get(tx, p), commit: false),
             "inspect" => document.Execute(tx => Inspect(tx, p), commit: false),
