@@ -30,6 +30,7 @@ from power_cad_mcp.ontology import (
     OntologyError,
     OntologyUnavailable,
     auto_context,
+    block_candidates,
     compact_element,
     drawing_key,
     in_drawing,
@@ -350,6 +351,10 @@ def test_client_elements(fake_url):
 
     # storey/sheet are filtered client-side ("2F" matches "2층"); several pages are followed.
     assert [d["id"] for d in client.elements("Door", storey="2F")["items"]] == ["el-d1"]
+    # ...and the storey is also sent, in the Korean form, for an API that filters server-side.
+    assert FakeOntology.requests[-1][2]["storey"] == "2층"
+    client.elements("Door", storey="B1")
+    assert FakeOntology.requests[-1][2]["storey"] == "지하1층"
     assert [d["id"] for d in client.elements("Door", sheet="a-101")["items"]] == ["el-d2"]
     assert "storey" not in FakeOntology.requests[-1][2]
     assert [d["name"] for d in client.elements("창호", text="AW-02")["items"]] == ["AW-02"]
@@ -441,6 +446,8 @@ def test_auto_context_bundle(fake_url):
     bundle = auto_context(client, "2층 평면도 문 리스트 갱신")
     assert bundle["inferred"]["classes"] == ["Door"] and bundle["read_only"] is True
     assert [d["id"] for d in bundle["elements"]["Door"]] == ["el-d1"]  # storey 2F matched "2층"
+    element_qs = [qs for m, path, qs, _ in FakeOntology.requests if path == "/v1/elements"]
+    assert element_qs and element_qs[0]["storey"] == "2층"  # sent as a param, filtered client-side too
     assert [d["drawing_number"] for d in bundle["drawings"]["plan"]] == ["A-201"]
     assert [d["drawing_number"] for d in bundle["drawings"]["schedule"]] == ["A-511"]
     assert [b["name"] for b in bundle["blocks"]["Door"]] == ["DOOR_SINGLE"]
@@ -821,3 +828,83 @@ async def test_ontology_locate_without_open_file(fake_url, tmp_path):
         out = await ToolCaller(client)("ontology_locate", element_ids=["el-d1"])
         # An unsaved Drawing1 is not the element's A-201.dwg, so the handle 2F3 is not offered.
         assert out["results"][0]["status"] == "other_drawing" and out["matched_handles"] == []
+
+
+# ------------------------------------------------------------ block candidates
+class _BlockClient:
+    """Stub with OntologyClient.blocks' signature; records the (category, q) queries."""
+
+    def __init__(self, items: list[dict[str, Any]], fail: str | None = None):
+        self.items, self.fail, self.calls = items, fail, []
+
+    def blocks(self, category=None, q=None, *, project_id=None, limit=50):
+        self.calls.append((category, q))
+        if self.fail and self.fail == category:
+            raise OntologyError("HTTP 500")
+        return {"items": self.items, "next_cursor": None}
+
+
+def test_block_candidates_rules():
+    items = [
+        {"name": "*U5", "effective_names": ["DOOR_SINGLE"], "category": "Door", "example_files": ["A-101.dwg"]},
+        {"name": "*U9", "category": "Door"},
+        {"name": "XREF_BASE", "is_xref": True, "category": "Door"},
+        {"name": "DOOR_FIRE", "category": "Door", "example_files": ["A-201.dwg"]},
+        {"name": "DOOR_SLIDE", "category": "Door", "example_files": ["A-301.dwg", "A-302.dwg"]},
+    ]  # fmt: skip
+    live = [{"name": "door_single", "base_point": [0, 0, 0], "entity_count": 3}, {"name": "DOOR_LOCAL"}]
+    client = _BlockClient(items)
+    out = block_candidates(client, "DOOR*", live, OPEN, project_id=" P1 ")
+    assert client.calls == [(None, "DOOR*")]
+    insertable = {c["insert_name"]: c for c in out["insertable"]}
+    # Dynamic block stored as *U5: matched through its effective name, inserted by the drawing's name.
+    assert (
+        insertable["door_single"]["ontology_name"] == "*U5" and insertable["door_single"]["entity_count"] == 3
+    )
+    assert insertable["DOOR_LOCAL"]["note"] == "defined in the open drawing; not in the Ontology"
+    reasons = {c["ontology_name"]: c["reason"] for c in out["not_insertable"]}
+    assert set(reasons) == {"*U9", "XREF_BASE"}
+    other = {c["ontology_name"]: c for c in out["other_files"]}
+    assert other["DOOR_SLIDE"]["example_files"] == ["A-301.dwg", "A-302.dwg"]
+    assert "only in the files" in other["DOOR_SLIDE"]["note"]
+    assert "parsed it from this drawing" in other["DOOR_FIRE"]["note"]  # A-201 is open but lacks it
+    assert out["counts"] == {"ontology_blocks": 5, "insertable": 2, "other_files": 2, "not_insertable": 2}
+    assert out["project_id"] == "P1" and out["read_only"] is True and "next_step" in out
+
+    # A task selects blocks by class; a failing query is a warning, an unreadable drawing is "unverified".
+    client = _BlockClient(items[3:], fail="Window")
+    out = block_candidates(client, "창호 블록 배치", None, None)
+    assert client.calls == [("Window", None), ("Door", None)]
+    assert out["insertable"] == [] and [c["ontology_name"] for c in out["unverified"]] == [
+        "DOOR_FIRE",
+        "DOOR_SLIDE",
+    ]
+    assert any(w.startswith("blocks[category=Window]") for w in out["warnings"])
+    assert any("block table could not be read" in w for w in out["warnings"])
+
+    client = _BlockClient([])
+    out = block_candidates(client, "place something here", [], OPEN)
+    assert client.calls == [(None, None)] and "listing all blocks" in out["warnings"][0]
+    with pytest.raises(OntologyError):
+        block_candidates(client, "  ", [], OPEN)
+
+
+@pytest.mark.anyio
+async def test_ontology_block_candidates_tool(fake_url, tmp_path):
+    backend = DxfBackend()
+    _draw_house(backend, str(tmp_path / "A-201.dxf"))  # defines DOOR_SINGLE
+    before = backend.list_entities(limit=100)
+    settings = Settings(backend="dxf", workspace=str(tmp_path), ontology_url=fake_url, ontology_timeout=3)
+    async with Client(create_server(backend, settings)) as client:
+        call = ToolCaller(client)
+        out = await call("ontology_block_candidates", name_or_task="창호 블록 배치")
+        assert [c["insert_name"] for c in out["insertable"]] == ["DOOR_SINGLE"]
+        assert out["other_files"][0]["ontology_name"] == "AW_WINDOW"
+        assert out["other_files"][0]["example_files"] == ["A-501.dwg"]
+        assert out["open_drawing"]["name"] == "A-201.dxf"
+        assert backend.list_entities(limit=100) == before  # read-only
+
+        # The insert_name is a real definition: insert_block takes it as-is.
+        name = out["insertable"][0]["insert_name"]
+        assert (await call("insert_block", name=name, insert=[50, 50]))["type"] == "INSERT"
+        assert "not defined" in await call.error("insert_block", name="AW_WINDOW", insert=[0, 0])

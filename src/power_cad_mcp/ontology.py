@@ -30,6 +30,7 @@ __all__ = [
     "OntologyError",
     "OntologyUnavailable",
     "auto_context",
+    "block_candidates",
     "compact_element",
     "drawing_key",
     "in_drawing",
@@ -188,10 +189,13 @@ class OntologyClient:
     ) -> dict[str, Any]:
         """``GET /v1/elements``. ``kind`` takes Korean aliases and commas (``Door,창호``).
 
-        The API has no storey/sheet filter, so those two are applied here, on the returned rows.
+        The API has no storey/sheet filter, so those two are applied here, on the returned rows. The
+        storey is still sent (as ``storey=2층``) so an API that learns to filter by it can do so; today it
+        ignores unknown parameters.
         """
         params = {
             "kind": kind,
+            "storey": storey_param(storey),
             "project_id": project_id,
             "text": text,
             "drawing_category": category_param(drawing_category),
@@ -361,6 +365,21 @@ def normalize_storey(value: str) -> str:
     return text.upper()
 
 
+def storey_param(value: str | None) -> str | None:
+    """Storey as the ``storey`` query parameter, in the Korean form the drawings carry: '2F' -> '2층',
+    'B1' -> '지하1층', 'roof' -> '지붕층'. Unrecognised text is passed through unchanged."""
+    if not value or not value.strip():
+        return None
+    norm = normalize_storey(value)
+    if m := re.fullmatch(r"B(\d+)F", norm):
+        return f"지하{m.group(1)}층"
+    if norm == "RF":
+        return "지붕층"
+    if m := re.fullmatch(r"(\d+)F", norm):
+        return f"{m.group(1)}층"
+    return value.strip()
+
+
 def rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
     """Pull the list of records out of a bare list or a wrapper object."""
     if isinstance(payload, list):
@@ -440,6 +459,9 @@ def compact_block(row: dict[str, Any]) -> dict[str, Any]:
             "attribute_tags": tags,
             "layers": _pick(row, "layers"),
             "example_files": files[:5] if isinstance(files, list) else files,
+            "effective_names": _pick(row, "effective_names"),
+            "is_xref": bool(row.get("is_xref")) or None,
+            "is_anonymous": bool(row.get("is_anonymous")) or None,
         }
     )
 
@@ -990,4 +1012,162 @@ def targets_summary(
     }
     if other:
         out["not_actionable"] = other
+    return out
+
+
+# ------------------------------------------------------------- ontology blocks -> CAD
+def _block_query_matches(name: str, query: str) -> bool:
+    """Block name vs. a ``name_like`` query the way the API reads it: wildcards, else a substring."""
+    name, query = name.lower(), query.lower()
+    if any(c in query for c in "*?%"):
+        pattern = re.escape(query).replace(r"\*", ".*").replace(r"\?", ".").replace("%", ".*")
+        return re.fullmatch(pattern, name) is not None
+    return query in name
+
+
+def block_candidates(
+    client: OntologyClient,
+    name_or_task: str,
+    drawing_blocks: list[dict[str, Any]] | None,
+    open_drawing: dict[str, Any] | None = None,
+    *,
+    project_id: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Cross-reference Ontology blocks with the block definitions of the open drawing (read-only).
+
+    ``name_or_task`` is a block name / wildcard (``DOOR*``) or a task sentence (``'문 블록 배치'``) whose
+    element classes select blocks by what their instances were classified as. ``drawing_blocks`` is the
+    backend's ``list_blocks()`` (None when it could not be read). Names compare case-insensitively, and a
+    block's effective names count too, since AutoCAD block names are case-insensitive and dynamic blocks
+    are stored under anonymous names.
+
+    Returns ``insertable`` (defined in the open drawing: pass ``insert_name`` to insert_block),
+    ``other_files`` (only defined in other drawings, see ``example_files``; never imported from here),
+    ``not_insertable`` (xrefs / anonymous blocks) and, when the drawing's blocks are unknown, ``unverified``.
+    """
+    text = (name_or_task or "").strip()
+    if not text:
+        raise OntologyError("name_or_task must not be empty.")
+    project_id = (project_id or "").strip() or None
+    limit = min(max(int(limit), 1), MAX_PAGE)
+    hints = infer_task(text)
+    warnings: list[str] = []
+
+    queries: list[tuple[str, str | None, str | None]] = []
+    if not re.search(r"\s", text):
+        queries.append((f"name_like={text}", None, text))
+    if not any(c in text for c in "*?%"):  # an explicit wildcard pattern is a name, not a task
+        queries.extend((f"category={cls}", cls, None) for cls in hints["classes"])
+    if not queries:
+        queries.append(("all", None, None))
+        warnings.append("no block name or element class recognised in the text; listing all blocks.")
+
+    found: dict[str, dict[str, Any]] = {}
+    for label, category, q in queries:
+        try:
+            page = client.blocks(category, q, project_id=project_id, limit=limit)
+        except OntologyUnavailable:
+            raise
+        except OntologyError as exc:
+            warnings.append(f"blocks[{label}]: {exc}")
+            continue
+        for block in page["items"]:
+            if block.get("name"):
+                found.setdefault(str(block["name"]), block)
+
+    live: dict[str, dict[str, Any]] = {}
+    for entry in drawing_blocks or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            live.setdefault(str(entry["name"]).lower(), entry)
+    if drawing_blocks is None:
+        warnings.append("the open drawing's block table could not be read; nothing is marked insertable.")
+
+    insertable: list[dict[str, Any]] = []
+    other_files: list[dict[str, Any]] = []
+    not_insertable: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for name, block in found.items():
+        info = _drop_empty(
+            {
+                "ontology_name": name,
+                "category": block.get("category"),
+                "instance_count": block.get("instance_count"),
+                "attribute_tags": block.get("attribute_tags"),
+                "layers": block.get("layers"),
+                "example_files": block.get("example_files"),
+            }
+        )
+        names = _unique([name, *(str(n) for n in block.get("effective_names") or [])])
+        hit = next((live[n.lower()] for n in names if n.lower() in live), None)
+        if block.get("is_xref"):
+            not_insertable.append(info | {"reason": "external reference (xref), not a block to insert"})
+        elif hit is not None:
+            used.add(str(hit["name"]).lower())
+            insertable.append(
+                _drop_empty(
+                    info
+                    | {
+                        "insert_name": hit["name"],
+                        "base_point": hit.get("base_point"),
+                        "entity_count": hit.get("entity_count"),
+                    }
+                )
+            )
+        elif name.startswith("*") and len(names) == 1:
+            not_insertable.append(info | {"reason": "anonymous block without an effective name"})
+        elif drawing_blocks is None:
+            unverified.append(info)
+        else:
+            files = block.get("example_files") or []
+            files = [files] if isinstance(files, str) else files
+            note = "not defined in the open drawing; it exists only in the files listed in example_files"
+            if any(in_drawing(f, open_drawing) for f in files):
+                note = (
+                    "the Ontology parsed it from this drawing, but the definition is not in it now "
+                    "(purged or renamed since ingestion?)"
+                )
+            other_files.append(info | {"note": note})
+
+    # Definitions present in the drawing that match the queried name but the Ontology does not know.
+    name_query = next((q for _, _, q in queries if q), None)
+    if name_query:
+        for key, entry in live.items():
+            if key not in used and not key.startswith("*") and _block_query_matches(key, name_query):
+                if entry.get("xref"):
+                    continue
+                insertable.append(
+                    _drop_empty(
+                        {
+                            "insert_name": entry["name"],
+                            "base_point": entry.get("base_point"),
+                            "entity_count": entry.get("entity_count"),
+                            "note": "defined in the open drawing; not in the Ontology",
+                        }
+                    )
+                )
+
+    out: dict[str, Any] = {
+        "query": text,
+        "project_id": project_id,
+        "inferred": {"classes": hints["classes"]},
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": {
+            "ontology_blocks": len(found),
+            "insertable": len(insertable),
+            "other_files": len(other_files),
+            "not_insertable": len(not_insertable),
+        },
+        "insertable": insertable[:limit],
+        "other_files": other_files[:limit],
+        "not_insertable": not_insertable[:limit],
+    }
+    if unverified:
+        out["unverified"] = unverified[:limit]
+        out["counts"]["unverified"] = len(unverified)
+    if insertable:
+        out["next_step"] = "insert_block(name=<insert_name>, insert=[x, y]) with one of `insertable`"
+    out["warnings"] = warnings
+    out["read_only"] = True
     return out

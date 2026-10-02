@@ -35,6 +35,8 @@ Power CAD drives AutoCAD (live, over COM on Windows) or a headless DXF drawing.
 - Ontology handles are only unique per drawing: before passing an element's handle to get_entity /
   move_entities / delete_entities / set_entity_properties, call ontology_locate(element_ids) and use only
   results with status "matched" (same source file as the open drawing, handle exists, entity plausible).
+- To place a block the Ontology knows, call ontology_block_candidates(name_or_task) and pass an
+  `insertable` entry's insert_name to insert_block; blocks only in other files are not imported.
 """
 
 PointArg = Annotated[list[float], Field(min_length=2, max_length=3, description="[x, y] or [x, y, z]")]
@@ -124,6 +126,26 @@ class PowerCad:
 
     def locate(self, element_ids: list[str]) -> dict[str, Any]:
         return ontology.locate(self.ontology, element_ids, self.open_drawing(), self.lookup)
+
+    def drawing_blocks(self) -> list[dict[str, Any]] | None:
+        """The open drawing's block definitions, or None when they cannot be read. Read-only."""
+        try:
+            blocks = self.backend.list_blocks()
+        except Exception:  # noqa: BLE001 - no drawing / AutoCAD gone: report "unknown", not an error
+            return None
+        return blocks if isinstance(blocks, list) else None
+
+    def block_candidates(
+        self, name_or_task: str, *, project_id: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        return ontology.block_candidates(
+            self.ontology,
+            name_or_task,
+            self.drawing_blocks(),
+            self.open_drawing(),
+            project_id=project_id,
+            limit=limit,
+        )
 
     def path(self, value: str, *, ext: str | None = None) -> str:
         value = os.path.expandvars(os.path.expanduser(value.strip().strip('"')))
@@ -980,5 +1002,26 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         mismatch, handle_missing, other_drawing or not_found. Only `matched` handles are safe to pass to
         get_entity / move_entities / delete_entities / set_entity_properties. Never modifies the drawing."""
         return cad.locate(element_ids)
+
+    @tool(ONTOLOGY)
+    def ontology_block_candidates(
+        name_or_task: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Block name or wildcard (DOOR*), or a task: '문 블록 배치' / 'place windows'",
+            ),
+        ],
+        project_id: ProjectArg = None,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> dict[str, Any]:
+        """Which Ontology blocks can be inserted into the open drawing right now, read-only.
+
+        Cross-references the Ontology block catalog (by name, or by the element classes a task names)
+        with the open drawing's block definitions (list_blocks, case-insensitive, effective names too).
+        `insertable` entries carry `insert_name`, the definition name to pass to insert_block;
+        `other_files` exist only in other drawings (see example_files) and are not imported;
+        `not_insertable` are xrefs / anonymous blocks. Never modifies the drawing."""
+        return cad.block_candidates(name_or_task, project_id=project_id, limit=limit)
 
     return mcp

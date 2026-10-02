@@ -6,7 +6,7 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 | 구성 | 위치 | 용도 |
 | --- | --- | --- |
 | **power-cad-server + AutoCAD 2027 플러그인 (C#/.NET 10, 주력)** | [`dotnet/`](dotnet) | 실도면 수정. AutoCAD 내부에서 트랜잭션으로 실행하고, 수정 직전 대상 확인·수정 직후 자동 검증·실패 시 롤백 |
-| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회·도면 대조(8개 도구) |
+| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회·도면 대조·블록 대조(9개 도구) |
 | best-cad-mcp (외부, 선택) | `uvx --from best-cad-mcp cad-mcp` | 도면 의미·객체 관계 분석 — 별도 MCP 서버로 함께 연결 |
 
 - 설계 문서: [프레임워크](docs/framework/AutoCAD2027_Framework.md) · [운영 지침(ASTRA)](docs/framework/ASTRA_CAD_Operating_Playbook.md) ·
@@ -24,7 +24,7 @@ Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plug
 | --- | --- |
 | 프레임워크 | `cad_get_document_identity`, `cad_bind_document`, `cad_extract_snapshot`, `cad_query_page`, `cad_review_snapshot`, `cad_plan_create`, `cad_plan_get`, `cad_plan_execute` |
 | 의미 컨텍스트 | `cad_context_query`, `cad_context_select`, `cad_context_actions`, `cad_context_action_select` |
-| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`** — Python 서버와 같은 이름·인자·결과 형태. `POWERCAD_ONTOLOGY_URL`을 설정해야 동작하며, 없으면 `[ONTOLOGY_NOT_CONFIGURED]` 오류를 돌려줍니다 |
+| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate` — Python 서버와 같은 이름·인자·결과 형태(AutoCAD에 도면이 열려 있으면 `in_open_drawing` 표시, `ontology_locate`는 `cad_*` 편집 도구용 `fingerprint`도 함께 반환). `POWERCAD_ONTOLOGY_URL`을 설정해야 동작하며, 없으면 `[ONTOLOGY_NOT_CONFIGURED]` 오류를 돌려줍니다 |
 | 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
 | 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
 | 인벤토리 | `cad_inventory` — 이름을 몰라도 모든 레이아웃(탭 순서·플롯 장치/용지·뷰포트/객체 수), 블록 정의(동적 블록 실제 이름·익명/레이아웃/XREF 여부·속성 정의·객체 종류별 개수·중첩 블록·레이아웃별 삽입 수), 레이아웃별 블록 참조(핸들·위치·회전·축척·레이어·속성값, 중첩 참조는 `max_depth`(기본 2)까지 경로 표시), XREF(경로·찾음/미해결 상태·부착/오버레이·중첩 그래프)를 읽기 전용으로 나열. XREF 파일은 열지 않으며 `max_blocks`·`max_references`·전송 크기 한도를 넘으면 `*_truncated`로 표시 |
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register_codex.ps1
 | 블록 | `list_blocks`, `create_block`, `insert_block` |
 | 조회/편집 | `list_entities`, `get_entity`, `delete_entities`, `move_entities`, `copy_entities`, `rotate_entities`, `scale_entities`, `mirror_entities`, `offset_entity`, `set_entity_properties` |
 | 화면/기타 | `zoom_extents`, `zoom_window`, `run_command` |
-| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate` |
+| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate`, `ontology_block_candidates` |
 
 규칙:
 - 좌표는 `[x, y]` 또는 `[x, y, z]`(도면 단위), 각도는 **도(degree)**, +X 기준 반시계 방향입니다.
@@ -215,13 +215,14 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 | 도구 | REST | 용도 |
 | --- | --- | --- |
 | `ontology_catalog` | `GET /v1/catalog` | 종류별 객체 수(한글 별칭 포함), 도면 분류, 레이어, 블록, 층, 프로젝트 |
-| `ontology_find_elements` | `GET /v1/elements?kind=` | `Door`/`Window`/`Wall`/`Space`/`Column`/`Beam`… 또는 `문`/`창호`/`벽체`; `drawing_category`·`layer`·`block_name`(와일드카드)·`text`·`bbox` 필터, `next_cursor` 페이지. 층·시트는 클라이언트에서 거릅니다 (`2F`=`2층`) |
+| `ontology_find_elements` | `GET /v1/elements?kind=` | `Door`/`Window`/`Wall`/`Space`/`Column`/`Beam`… 또는 `문`/`창호`/`벽체`; `drawing_category`·`layer`·`block_name`(와일드카드)·`text`·`bbox` 필터, `next_cursor` 페이지. 층·시트는 클라이언트에서 거릅니다 (`2F`=`2층`). Python 서버는 층을 `storey=2층` 파라미터로도 보내 두어, 서버 측 층 필터를 지원하는 API에서는 그대로 쓰입니다(현재 API는 무시) |
 | `ontology_blocks` | `GET /v1/blocks?name_like=` | 블록 정의, 사용 횟수, 속성 태그, 레이어, 예시 파일. `category`(Door, 창호…)는 인스턴스 분류로 거릅니다 |
 | `ontology_drawings` | `GET /v1/drawings?category=` | `plan`/`detail`/`section`/`elevation`/`structural`/`schedule` 또는 `평면도`/`상세도`/`창호도`…; 시트별 도면번호·도면명·축척 |
 | `ontology_element_context` | `GET /v1/elements/{id}/context?hops=` | 객체와 1–2 hop 그래프 이웃(층·실·호스트 벽·시트·블록 정의) |
 | `ontology_search` | `POST /v1/search` | 어휘 + 벡터 + 그래프 하이브리드 검색 (`top_k`, `kind`, `storey`) |
 | `ontology_auto_context` | 위 조합 | 작업 문장 하나로 필요한 자료 묶음을 한 번에 반환 (`project_id`, 검색 결과 수 `k` 지정 가능) |
 | `ontology_locate` | `GET /v1/elements/{id}/context` + 열린 도면 | Ontology 객체 id → 현재 열린 도면의 실제 handle 확인(읽기 전용) |
+| `ontology_block_candidates` (Python) | `GET /v1/blocks` + `list_blocks` | Ontology 블록 중 열린 도면에 정의가 있어 `insert_block`에 바로 쓸 수 있는 것 / 다른 파일에만 있는 것 구분(읽기 전용) |
 
 `ontology_auto_context(task, drawing?, project_id?, k?)`는 작업 문장(한국어/영어)에서 키워드로 대상을 추론합니다.
 `project_id`를 주면 객체·도면·블록·검색 호출 모두 그 프로젝트로 한정합니다.
@@ -265,6 +266,38 @@ Ontology 객체에는 `handle`, `document_id`, `source_file`이 있지만 **hand
 `ontology_context.available=false`와 오류 문구만 남습니다. 조회가 성공하면 `ontology_targets`도 붙습니다: 묶음 안의 객체를 추가 Ontology 호출 없이
 `ontology_locate`와 같은 규칙으로 열린 도면에 대조해, `matched`인 객체의 `element_id`·`class`·`name`·`handle`·엔티티 종류와 상태별 개수(`counts`)를 요약합니다.
 작도 작업 자체는 바뀌지 않습니다. Ontology 결과는 참고 정보이므로, 실제 수정에는 `matched` handle만 쓰세요.
+
+### Ontology 블록 → `insert_block` (`ontology_block_candidates`, Python 서버)
+
+`insert_block`은 열린 도면에 정의된 블록 이름만 받습니다. `ontology_block_candidates(name_or_task, project_id?, limit?)`는
+Ontology 블록 카탈로그(`/v1/blocks`)와 열린 도면의 블록 정의(`list_blocks`)를 대조합니다. 도면을 수정하지 않고, 다른 파일에서 정의를 가져오지도 않습니다.
+
+- `name_or_task`: 블록 이름/와일드카드(`DOOR*` → `name_like`) 또는 작업 문장(`"문 블록 배치"` → 인스턴스가 `Door`로 분류된 블록).
+  공백 없는 단어(`문`, `door`)는 이름과 분류 두 가지로 찾습니다.
+- 이름 비교는 대소문자를 무시하고 블록의 `effective_names`도 봅니다(동적 블록은 `*U12` 같은 익명 이름으로 저장되기 때문).
+- `insertable`: 열린 도면에 정의가 있음 → `insert_name`을 그대로 `insert_block(name=…)`에 넘깁니다(`base_point`, `entity_count` 포함).
+  이름 질의에 맞지만 Ontology에 없는 도면 내 블록도 `note`와 함께 여기에 나옵니다.
+- `other_files`: 다른 도면에만 있음 → `example_files`에 있는 파일을 열어 작업하거나, 사용자가 블록을 직접 가져와야 합니다.
+  Ontology가 이 도면에서 읽었다고 하는데 지금 정의가 없으면(purge/이름 변경) `note`로 알려 줍니다.
+- `not_insertable`: XREF, effective name 없는 익명 블록. 블록 테이블을 읽지 못하면 `unverified`에 두고 `warnings`에 이유를 남깁니다.
+
+### COM 편집 플랜에서 Ontology id 쓰기 (`scripts/com_plan_runner.py`)
+
+`com_plan_runner.py`의 플랜(`docs/playbooks/*.plan.json`)은 대상을 handle + 예상 형상으로 고정합니다. op마다 `elements`를 두면
+handle 대신(또는 함께) Ontology 객체 id로 대상을 지정할 수 있습니다.
+
+```json
+{"id": "D1", "op": "delete", "elements": {"@door": "obs_18a…", "AA4": "obs_33b…"},
+ "expect": {"@door": "AcDbBlockReference", "AA4": "AcDbPolyline"}}
+```
+
+- `@`로 시작하는 키는 자리표시자로, 그 op의 `expect` 키·`handles`·`handle`에서 확인된 handle로 바뀝니다.
+- 그 밖의 키는 플랜에 이미 적힌 handle이며, 객체가 정확히 그 handle로 확인되어야 합니다.
+- 검증 전에 Ontology REST API(`--ontology-url`, 없으면 `POWERCAD_ONTOLOGY_URL`, 기본 `http://127.0.0.1:58000`)에서 객체를 받아
+  `ontology_locate`와 같은 규칙(원본 파일 = 열린 도면, handle 존재, 엔티티 타당성)으로 대조합니다. 하나라도 `matched`가 아니거나
+  쓰이지 않는 키·같은 handle로 겹치는 대상이 있으면 `{"ok": false, "stage": "resolve"}`로 플랜 전체를 거부합니다.
+- 그 뒤 기존 예상 형상 검사가 확인된 handle에 그대로 실행되고, 결과에 `resolved`(키 → id → handle)가 붙습니다.
+  `elements`가 없는 플랜은 Ontology에 접속하지 않습니다.
 
 ## 보안
 

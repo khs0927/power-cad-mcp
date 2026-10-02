@@ -300,6 +300,8 @@ public sealed class OntologyRestClient
         [
             new("kind", kind),
             new("project_id", projectId),
+            // Not filtered by the API today (filtered below, client-side); sent so an API that learns it can filter server-side.
+            new("storey", OntologyRest.StoreyParam(storey)),
             new("text", text),
             new("drawing_category", OntologyRest.CategoryParam(drawingCategory)),
             new("layer", layer),
@@ -649,6 +651,42 @@ public static partial class OntologyRest
         return text.ToUpperInvariant();
     }
 
+    [GeneratedRegex(@"^B(\d+)F\z")]
+    private static partial Regex BasementStoreyNorm();
+
+    [GeneratedRegex(@"^(\d+)F\z")]
+    private static partial Regex StoreyNorm();
+
+    /// <summary>
+    /// Storey as the storey query parameter, in the Korean form the drawings carry: '2F' -> '2층', 'B1' -> '지하1층',
+    /// 'roof' -> '지붕층'. Unrecognised text is passed through unchanged.
+    /// </summary>
+    public static string? StoreyParam(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var norm = NormalizeStorey(value);
+        if (BasementStoreyNorm().Match(norm) is { Success: true } b)
+        {
+            return $"지하{b.Groups[1].Value}층";
+        }
+
+        if (norm == "RF")
+        {
+            return "지붕층";
+        }
+
+        if (StoreyNorm().Match(norm) is { Success: true } n)
+        {
+            return $"{n.Groups[1].Value}층";
+        }
+
+        return value.Trim();
+    }
+
     /// <summary>Element / search hit in one stable shape (/v1/elements items, /v1/search hits).</summary>
     public static JsonObject CompactElement(JsonObject row)
     {
@@ -892,6 +930,7 @@ public static partial class OntologyRest
         int limit = 20,
         int k = 10,
         string? projectId = null,
+        JsonObject? openDrawing = null,
         CancellationToken ct = default)
     {
         client.EnsureConfigured();
@@ -1024,7 +1063,7 @@ public static partial class OntologyRest
             }
         }
 
-        return new JsonObject
+        var bundle = new JsonObject
         {
             ["task"] = task,
             ["drawing"] = drawing,
@@ -1034,22 +1073,48 @@ public static partial class OntologyRest
             ["elements"] = elements,
             ["drawings"] = drawings,
             ["blocks"] = blocks,
-            ["counts"] = new JsonObject
-            {
-                ["search"] = search.Count,
-                ["elements"] = elementCounts,
-                ["drawings"] = drawingCounts,
-                ["blocks"] = blockCounts,
-            },
-            ["warnings"] = new JsonArray(warnings.Select(w => (JsonNode)w).ToArray()),
-            ["read_only"] = true,
         };
+        var counts = new JsonObject
+        {
+            ["search"] = search.Count,
+            ["elements"] = elementCounts,
+            ["drawings"] = drawingCounts,
+            ["blocks"] = blockCounts,
+        };
+        if (openDrawing is { Count: > 0 })
+        {
+            // Tag every hit/element whose source_file is the open drawing, so the agent knows which handles it can act on.
+            bundle["open_drawing"] = DrawingLabel(openDrawing);
+            var tagged = ((JsonArray)bundle["search"]!).OfType<JsonObject>()
+                .Concat(elements.Select(kv => kv.Value).OfType<JsonArray>().SelectMany(a => a.OfType<JsonObject>()))
+                .ToList();
+            var inOpen = new HashSet<object>();
+            foreach (var item in tagged)
+            {
+                var flag = InDrawing(item["source_file"], openDrawing) == true;
+                item["in_open_drawing"] = flag;
+                if (flag)
+                {
+                    inOpen.Add(Truthy(item["id"]) ? "id:" + Str(item["id"]) : item);
+                }
+            }
+
+            counts["in_open_drawing"] = inOpen.Count;
+        }
+
+        bundle["counts"] = counts;
+        bundle["warnings"] = new JsonArray(warnings.Select(w => (JsonNode)w).ToArray());
+        bundle["read_only"] = true;
+        return bundle;
     }
 }
 
-/// <summary>Read-only ontology_* tools over the Ontology REST API (parity with the Python server's tools).</summary>
+/// <summary>
+/// Read-only ontology_* tools over the Ontology REST API (parity with the Python server's tools). The CAD gateway is
+/// optional: with it, ontology_auto_context tags elements of the open drawing and ontology_locate checks live handles.
+/// </summary>
 [McpServerToolType]
-public sealed class OntologyRestTools(OntologyRestClient ontology)
+public sealed partial class OntologyRestTools(OntologyRestClient ontology, ICadGateway? gateway = null)
 {
     private static string Json(JsonNode node) => node.ToJsonString(CadJson.Options);
 
@@ -1174,7 +1239,8 @@ public sealed class OntologyRestTools(OntologyRestClient ontology)
     [McpServerTool(Name = "ontology_auto_context", ReadOnly = true, Idempotent = true, Destructive = false, OpenWorld = true)]
     [Description("Pull up every relevant element for a task without the user listing them: infers element classes "
         + "(Door/Window/Wall/Space/Column/Beam/SteelSection...), drawing categories (plan/detail/...), storey and marks from the text, "
-        + "then returns search hits, elements by class, sheets by category and blocks in one bundle.")]
+        + "then returns search hits, elements by class, sheets by category and blocks in one bundle. When a drawing is open, each "
+        + "hit/element carries `in_open_drawing`; pass the ids to ontology_locate before editing by handle.")]
     public async Task<string> AutoContext(
         [Description("What the automation will do, e.g. '2층 평면도 문 리스트 갱신' or '창호상세도에 AW-02 추가'")] string task,
         [Description("Optional sheet number / file name to focus on")] string? drawing = null,
@@ -1190,6 +1256,8 @@ public sealed class OntologyRestTools(OntologyRestClient ontology)
 
         Range(nameof(limit), limit, 1, 200);
         Range(nameof(k), k, 1, 100);
-        return Json(await OntologyRest.AutoContextAsync(ontology, task, drawing, limit, k, project_id, ct).ConfigureAwait(false));
+        ontology.EnsureConfigured(); // no AutoCAD round trip when the service is not configured
+        var live = await OntologyCad.OpenDrawingAsync(gateway, ct).ConfigureAwait(false);
+        return Json(await OntologyRest.AutoContextAsync(ontology, task, drawing, limit, k, project_id, live?.Drawing, ct).ConfigureAwait(false));
     }
 }

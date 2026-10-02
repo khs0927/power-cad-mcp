@@ -122,3 +122,81 @@ async def test_live_ontology_locate(tmp_path):
             out = await call("ontology_locate", element_ids=[element["id"]])
             # The open drawing is the unsaved Drawing1.dxf, never the element's source file.
             assert out["results"][0]["status"] == "other_drawing" and out["matched_handles"] == []
+
+
+@pytest.mark.anyio
+async def test_live_block_candidates(tmp_path):
+    """ontology_block_candidates against the live block catalog: shape, and every `insertable` name is a
+    definition of the open drawing (so insert_block accepts it)."""
+    backend = DxfBackend()
+    settings = Settings(backend="dxf", workspace=str(tmp_path), ontology_url=LIVE_URL, ontology_timeout=30)
+    fixtures = _fixture_dir()
+    if fixtures and (fixtures / "simple_house.dxf").is_file():
+        backend.open_drawing(str(fixtures / "simple_house.dxf"))
+    async with Client(create_server(backend, settings)) as client:
+        call = ToolCaller(client)
+        live_names = {b["name"] for b in await call("list_blocks")}
+        for query in ("문 블록 배치", "*"):
+            out = await call("ontology_block_candidates", name_or_task=query)
+            assert out["read_only"] is True
+            assert {"insertable", "other_files", "not_insertable", "counts", "warnings"} <= set(out)
+            assert {c["insert_name"] for c in out["insertable"]} <= live_names
+            assert all(c["example_files"] for c in out["other_files"] if "example_files" in c)
+
+
+def test_live_plan_runner_resolves_element_ids():
+    """com_plan_runner's element-id resolution with the real Ontology client; the headless DXF backend
+    stands in for the COM document (same drawing_info / get_entity contract)."""
+    import importlib.util
+
+    from power_cad_mcp.ontology import OntologyClient
+
+    fixtures = _fixture_dir()
+    fixture = fixtures / "simple_house.dxf" if fixtures else None
+    if not (fixture and fixture.is_file()):
+        pytest.skip("Ontology fixture simple_house.dxf not available")
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("com_plan_runner", root / "scripts" / "com_plan_runner.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    client = OntologyClient(LIVE_URL, timeout=30)
+    page = client.elements("Wall", limit=500, include_properties=False)
+    walls = [
+        e
+        for e in page["items"]
+        if os.path.splitext(os.path.basename(e.get("source_file", "")))[0].lower() == "simple_house"
+        and e.get("handle")
+    ]
+    if not walls:
+        pytest.skip("simple_house.dxf is not ingested in this Ontology")
+    backend = DxfBackend()
+    backend.open_drawing(str(fixture))
+
+    def lookup(handle: str):
+        try:
+            return backend.get_entity(handle)
+        except Exception:  # noqa: BLE001
+            return None
+
+    wall = walls[0]
+    plan = {
+        "ops": [
+            {
+                "id": "w",
+                "op": "delete",
+                "elements": {"@wall": wall["id"]},
+                "expect": {"@wall": "AcDbPolyline"},
+            },
+            {
+                "id": "x",
+                "op": "delete",
+                "elements": {"@gone": "obs_missing"},
+                "expect": {"@gone": "AcDbLine"},
+            },
+        ]
+    }
+    resolved, log, errors = runner.resolve_elements(plan, client, backend.drawing_info(), lookup)
+    assert log[0]["status"] == "matched" and log[0]["handle"].upper() == wall["handle"].upper()
+    assert resolved["ops"][0]["expect"] == {log[0]["handle"]: "AcDbPolyline"}
+    assert len(errors) == 1 and errors[0].startswith("[x] delete: element obs_missing is not_found")

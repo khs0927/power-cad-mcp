@@ -27,6 +27,12 @@ public sealed class OntologyRestTests
 
         public TimeSpan Delay { get; set; }
 
+        /// <summary>Elements added by a test (e.g. ones whose handles exist in a simulated drawing).</summary>
+        public List<JsonObject> Extra { get; } = [];
+
+        public static JsonObject Element(string id, string kind, string label, string doc, string layout, string storey,
+            string? layer = null, string? block = null, string? handle = null) => El(id, kind, label, doc, layout, storey, layer, block, "평면도", "{}", handle);
+
         private static JsonObject El(string id, string kind, string label, string doc, string layout, string storey,
             string? layer = null, string? block = null, string? category = null, string attributes = "{}", string? handle = null) => new()
         {
@@ -151,7 +157,7 @@ public sealed class OntologyRestTests
             }
         }
 
-        private static HttpResponseMessage Dispatch(string path, Dictionary<string, string> qs, JsonObject? body)
+        private HttpResponseMessage Dispatch(string path, Dictionary<string, string> qs, JsonObject? body)
         {
             string? Q(string k) => qs.TryGetValue(k, out var v) ? v : null;
             switch (path)
@@ -176,7 +182,7 @@ public sealed class OntologyRestTests
 
                     var cat = Q("drawing_category") is { } c ? CategoryAliases.GetValueOrDefault(c, c) : null;
                     var text = (Q("text") ?? "").ToLowerInvariant();
-                    var found = Elements.Where(e =>
+                    var found = Elements.Concat(Extra).Where(e =>
                         (kinds.Count == 0 || kinds.Contains(e["kind"]!.GetValue<string>()))
                         && (cat is null || e["drawing_category"]?.GetValue<string>() == cat)
                         && (text.Length == 0 || (e["label"]!.GetValue<string>() + e["attributes"]!.ToJsonString()).ToLowerInvariant().Contains(text)));
@@ -241,7 +247,7 @@ public sealed class OntologyRestTests
             if (path.StartsWith("/v1/elements/", StringComparison.Ordinal) && path.EndsWith("/context", StringComparison.Ordinal))
             {
                 var id = Uri.UnescapeDataString(path.Split('/')[3]);
-                var el = Elements.FirstOrDefault(e => e["id"]!.GetValue<string>() == id);
+                var el = Elements.Concat(Extra).FirstOrDefault(e => e["id"]!.GetValue<string>() == id);
                 if (el is null)
                 {
                     return Send(HttpStatusCode.NotFound, new JsonObject { ["detail"] = "Object not found" });
@@ -361,7 +367,7 @@ public sealed class OntologyRestTests
 
         // storey/sheet are filtered client-side ("2F" matches "2층") with full pages.
         Assert.Equal(["el-d1"], Ids(await client.ElementsAsync("Door", storey: "2F")));
-        Assert.False(_fake.Requests[^1].Query.ContainsKey("storey"));
+        Assert.Equal("2층", _fake.Requests[^1].Query["storey"]); // also sent, so a future API can filter server-side
         Assert.Equal("500", _fake.Requests[^1].Query["limit"]);
         Assert.Equal(["el-d2"], Ids(await client.ElementsAsync("Door", sheet: "a-101")));
         Assert.Equal(["AW-02"], Ids(await client.ElementsAsync("창호", text: "AW-02"), "name"));
@@ -446,6 +452,7 @@ public sealed class OntologyRestTests
             () => tools.ElementContext("x"),
             () => tools.Search("문"),
             () => tools.AutoContext("문 리스트"),
+            () => tools.Locate(["x"]),
         };
         foreach (var call in calls)
         {
@@ -617,5 +624,296 @@ public sealed class OntologyRestTests
         var scoped = Obj(await tools.AutoContext("문 리스트", project_id: "P1", k: 1));
         Assert.Equal("P1", scoped["project_id"]!.GetValue<string>());
         Assert.Equal(1, _fake.Requests.Last(r => r.Path == "/v1/search").Body!["top_k"]!.GetValue<int>());
+    }
+
+    // ---------------------------------------------------------------- ontology -> CAD (ontology_locate)
+    [Theory]
+    [InlineData("2F", "2층")]
+    [InlineData("2층", "2층")]
+    [InlineData("L02", "2층")]
+    [InlineData("B1", "지하1층")]
+    [InlineData("지하2층", "지하2층")]
+    [InlineData("roof", "지붕층")]
+    [InlineData("  Mezz ", "Mezz")]
+    [InlineData("  ", null)]
+    [InlineData(null, null)]
+    public void Storey_param_is_the_korean_form(string? value, string? expected) => Assert.Equal(expected, OntologyRest.StoreyParam(value));
+
+    [Theory]
+    [InlineData("A-201.dwg", "a-201")]
+    [InlineData("a-201.DXF", "a-201")]
+    [InlineData(@"C:\\Proj\\Sub\\A-201.Dwg", "a-201")]
+    [InlineData("/srv/drawings/A-201.dxf", "a-201")]
+    [InlineData("A-201", "a-201")]
+    [InlineData("A-201.backup.dwg", "a-201.backup")]
+    [InlineData("plan.pdf", "plan.pdf")]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Drawing_key(string? name, string? key) => Assert.Equal(key, OntologyRest.DrawingKey(name));
+
+    [Fact]
+    public void In_drawing()
+    {
+        var info = new JsonObject { ["name"] = "A-201.dxf", ["path"] = "/tmp/x/A-201.dxf" };
+        Assert.True(OntologyRest.InDrawing("A-201.dwg", info)); // the DWG the element came from = its DXF copy
+        Assert.True(OntologyRest.InDrawing(@"C:\Proj\a-201.DWG", info));
+        Assert.False(OntologyRest.InDrawing("A-501.dwg", info));
+        Assert.Null(OntologyRest.InDrawing((string?)null, info));
+        Assert.Null(OntologyRest.InDrawing("A-201.dwg", null));
+        Assert.Null(OntologyRest.InDrawing("A-201.dwg", new JsonObject { ["name"] = "", ["path"] = null }));
+    }
+
+    private static JsonObject Door() => new()
+    {
+        ["id"] = "el-1", ["class"] = "Door", ["name"] = "SD-01", ["source_file"] = "A-201.dwg", ["handle"] = "1A",
+        ["layer"] = "A-DOOR", ["block_name"] = "DOOR_SINGLE",
+    };
+
+    private static JsonObject OpenA201() => new() { ["name"] = "A-201.dxf", ["path"] = "/w/A-201.dxf" };
+
+    private static JsonObject With(JsonObject o, string key, JsonNode? value)
+    {
+        var copy = o.DeepClone().AsObject();
+        if (value is null)
+        {
+            copy.Remove(key);
+        }
+        else
+        {
+            copy[key] = value;
+        }
+
+        return copy;
+    }
+
+    private sealed class FakeLookup(params JsonObject[] entities)
+    {
+        public List<string> Calls { get; } = [];
+
+        public Task<JsonObject?> Find(string handle)
+        {
+            Calls.Add(handle);
+            return Task.FromResult(entities.FirstOrDefault(e => e["handle"]!.GetValue<string>() == handle.ToUpperInvariant())?.DeepClone().AsObject());
+        }
+    }
+
+    private static Task<JsonObject> Match(JsonObject? element, JsonObject? open, FakeLookup lookup, string? id = null) =>
+        OntologyRest.MatchElementAsync(element, open, lookup.Find, id);
+
+    [Fact]
+    public async Task Match_element_statuses()
+    {
+        var insert = JsonNode.Parse("""{"handle": "1A", "type": "INSERT", "layer": "a-door", "name": "DOOR_SINGLE", "position": [0, 0, 0], "fingerprint": "fp1", "rotation": 0}""")!.AsObject();
+        var ok = await Match(Door(), OpenA201(), new FakeLookup(insert));
+        Assert.Equal("matched", ok["status"]!.GetValue<string>());
+        Assert.Equal("1A", ok["handle"]!.GetValue<string>());
+        Assert.Equal("el-1", ok["element_id"]!.GetValue<string>());
+        Assert.Equal("""{"handle":"1A","type":"INSERT","layer":"a-door","name":"DOOR_SINGLE","position":[0,0,0],"fingerprint":"fp1"}""", ok["entity"]!.ToJsonString());
+        Assert.Equal(OpenA201().ToJsonString(), ok["open_drawing"]!.ToJsonString());
+        Assert.Equal("A-201.dwg", ok["source_file"]!.GetValue<string>());
+
+        // Another drawing: the handle is never even looked up (it would name an unrelated entity).
+        var lookup = new FakeLookup(insert);
+        var other = await Match(With(Door(), "source_file", "A-501.dwg"), OpenA201(), lookup);
+        Assert.Equal("other_drawing", other["status"]!.GetValue<string>());
+        Assert.Empty(lookup.Calls);
+        var nothingOpen = await Match(Door(), null, lookup);
+        Assert.Equal("other_drawing", nothingOpen["status"]!.GetValue<string>());
+        Assert.Equal("no drawing is open", nothingOpen["note"]!.GetValue<string>());
+        var noSource = await Match(With(Door(), "source_file", null), OpenA201(), lookup);
+        Assert.Contains("no source_file", noSource["note"]!.GetValue<string>());
+        Assert.Empty(lookup.Calls);
+
+        var gone = await Match(With(Door(), "sheet", "Layout1"), OpenA201(), new FakeLookup());
+        Assert.Equal("handle_missing", gone["status"]!.GetValue<string>());
+        Assert.Contains("Layout1", gone["note"]!.GetValue<string>());
+        var modelGone = await Match(With(Door(), "sheet", "Model"), OpenA201(), new FakeLookup());
+        Assert.DoesNotContain("layout", modelGone["note"]!.GetValue<string>());
+        var noHandle = await Match(With(Door(), "handle", null), OpenA201(), new FakeLookup());
+        Assert.Equal("handle_missing", noHandle["status"]!.GetValue<string>());
+        Assert.Equal("the element has no handle", noHandle["note"]!.GetValue<string>());
+
+        var line = JsonNode.Parse("""{"handle": "1A", "type": "LINE", "layer": "A-DOOR"}""")!.AsObject();
+        var bad = await Match(Door(), OpenA201(), new FakeLookup(line));
+        Assert.Equal("mismatch", bad["status"]!.GetValue<string>());
+        Assert.Contains("block 'DOOR_SINGLE'", bad["reasons"]![0]!.GetValue<string>());
+        var otherBlock = await Match(Door(), OpenA201(), new FakeLookup(With(insert, "name", "WINDOW")));
+        Assert.Equal("mismatch", otherBlock["status"]!.GetValue<string>());
+        Assert.Contains("'WINDOW'", otherBlock["reasons"]![0]!.GetValue<string>());
+        var anonymous = await Match(Door(), OpenA201(), new FakeLookup(With(insert, "name", "*U12")));
+        Assert.Equal("matched", anonymous["status"]!.GetValue<string>()); // dynamic block reference: effective name not visible
+        var otherLayer = await Match(Door(), OpenA201(), new FakeLookup(With(insert, "layer", "0")));
+        Assert.Equal("mismatch", otherLayer["status"]!.GetValue<string>());
+        Assert.Contains("layer", otherLayer["reasons"]![0]!.GetValue<string>());
+
+        // Door drawn as plain geometry (LINE + ARC on A-DOOR) is plausible ...
+        var plain = JsonNode.Parse("""{"id": "el-2", "class": "Door", "source_file": "A-201.dwg", "handle": "A3", "layer": "A-DOOR"}""")!.AsObject();
+        Assert.Equal("matched", (await Match(plain, OpenA201(), new FakeLookup(With(line, "handle", "A3"))))["status"]!.GetValue<string>());
+        // ... but a dimension or a text is not a door; a text is fine for a room name.
+        var dim = JsonNode.Parse("""{"handle": "A3", "type": "DIMENSION", "layer": "A-DOOR"}""")!.AsObject();
+        Assert.Equal("mismatch", (await Match(plain, OpenA201(), new FakeLookup(dim)))["status"]!.GetValue<string>());
+        var text = JsonNode.Parse("""{"handle": "A3", "type": "TEXT", "layer": "A-DOOR", "text": "SD-01"}""")!.AsObject();
+        Assert.Equal("mismatch", (await Match(plain, OpenA201(), new FakeLookup(text)))["status"]!.GetValue<string>());
+        Assert.Equal("matched", (await Match(With(plain, "class", "Space"), OpenA201(), new FakeLookup(text)))["status"]!.GetValue<string>());
+
+        Assert.Equal(
+            """{"element_id":"x","status":"not_found","open_drawing":{"name":"A-201.dxf","path":"/w/A-201.dxf"}}""",
+            (await Match(null, OpenA201(), new FakeLookup(), "x")).ToJsonString());
+    }
+
+    [Fact]
+    public async Task Targets_summary_uses_the_bundle_only()
+    {
+        var bundle = new JsonObject
+        {
+            ["search"] = new JsonArray(Door()),
+            ["elements"] = new JsonObject
+            {
+                ["Door"] = new JsonArray(Door(), With(With(Door(), "id", "el-9"), "handle", "FF"), With(With(Door(), "id", "el-5"), "source_file", "B.dwg")),
+            },
+        };
+        var lookup = new FakeLookup(JsonNode.Parse("""{"handle": "1A", "type": "INSERT", "layer": "A-DOOR", "name": "DOOR_SINGLE"}""")!.AsObject());
+        var output = await OntologyRest.TargetsSummaryAsync(bundle, OpenA201(), lookup.Find);
+        Assert.Equal("""{"matched":1,"handle_missing":1,"other_drawing":1}""", output["counts"]!.ToJsonString()); // el-1 counted once
+        Assert.Equal("""[{"element_id":"el-1","class":"Door","name":"SD-01","handle":"1A","type":"INSERT","layer":"A-DOOR"}]""", output["targets"]!.ToJsonString());
+        Assert.Equal("""["el-9: handle_missing"]""", output["not_actionable"]!.ToJsonString());
+        Assert.Equal(["1A", "FF"], lookup.Calls);
+    }
+
+    [Fact]
+    public void Open_drawing_from_the_document_identity()
+    {
+        var live = OntologyCad.Describe(JsonNode.Parse("""{"document_id": "d1", "document": "C:\\Proj\\A-201.dwg"}"""))!;
+        Assert.Equal("""{"name":"A-201.dwg","path":"C:\\Proj\\A-201.dwg"}""", live.Drawing.ToJsonString());
+        Assert.Equal("d1", live.DocumentId);
+        Assert.Equal("""{"name":"Sample-Plan.dwg"}""", OntologyCad.Describe(JsonNode.Parse("""{"document": "Sample-Plan.dwg"}"""))!.Drawing.ToJsonString());
+        Assert.Null(OntologyCad.Describe(JsonNode.Parse("""{"backend": "autocad", "document": null}""")));
+        Assert.Null(OntologyCad.Describe(null));
+    }
+
+    /// <summary>AutoCAD without the plugin / not running: every call fails like the pipe gateway does.</summary>
+    private sealed class DeadGateway : ICadGateway
+    {
+        public int Calls { get; private set; }
+
+        public string Mode => "autocad";
+
+        public Task<JsonNode?> SendAsync(string command, JsonObject? parameters, CancellationToken ct)
+        {
+            Calls++;
+            throw new PowerCad.Core.CadException(PowerCad.Core.ErrorCodes.NotConnected, "No running AutoCAD with the Power CAD plugin was found.");
+        }
+
+        public JsonArray ListTargets() => [];
+
+        public JsonObject SelectTarget(string target) => throw new NotSupportedException();
+    }
+
+    /// <summary>A-201 as the open drawing: a wall polyline, a door block reference and a stray text.</summary>
+    private static (PowerCad.Core.Simulation.InMemoryCadDocument Doc, string Wall, string Door, string Text) House()
+    {
+        var doc = new PowerCad.Core.Simulation.InMemoryCadDocument { Name = @"C:\Proj\A-201.dxf" };
+        doc.AddLayer("A-WALL");
+        doc.AddLayer("A-DOOR");
+        doc.DefineBlock("DOOR_SINGLE", 900);
+        var wall = doc.Add(new PowerCad.Core.Commands.CreateSpec(PowerCad.Core.Model.EntityTypes.Polyline, "A-WALL")
+        {
+            Points = [new(0, 0), new(100, 0), new(100, 50)],
+        });
+        var door = doc.Add(new PowerCad.Core.Commands.CreateSpec(PowerCad.Core.Model.EntityTypes.Insert, "A-DOOR") { BlockName = "DOOR_SINGLE", A = new(10, 0) });
+        var text = doc.Add(new PowerCad.Core.Commands.CreateSpec(PowerCad.Core.Model.EntityTypes.Text, "A-DOOR") { Text = "SD-01", A = new(10, 5), Height = 2.5 });
+        return (doc, wall, door, text);
+    }
+
+    [Fact]
+    public async Task Locate_tool_maps_elements_to_live_handles_read_only()
+    {
+        var (doc, wall, door, text) = House();
+        _fake.Extra.AddRange(
+        [
+            FakeOntology.Element("el-x-door", "Door", "SD-01", "A-201", "Model", "2층", "A-DOOR", "DOOR_SINGLE", door),
+            FakeOntology.Element("el-x-wall", "Wall", "W-1", "A-201", "Model", "2층", "A-WALL", handle: wall),
+            FakeOntology.Element("el-x-label", "Door", "SD-01", "A-201", "Model", "2층", "A-DOOR", handle: text),
+            FakeOntology.Element("el-x-gone", "Wall", "W-2", "A-201", "Model", "2층", "A-WALL", handle: "FFFF"),
+        ]);
+        var commits = doc.CommitCount;
+        var tools = new OntologyRestTools(Client(), new DocumentBoundGateway(new SimulatorGateway(doc, readOnly: false)));
+
+        var output = Obj(await tools.Locate(["el-x-door", "el-x-wall", "el-x-label", "el-x-gone", "el-w1", "nope", " el-x-door ", ""]));
+        var byId = output["results"]!.AsArray().ToDictionary(r => r!["element_id"]!.GetValue<string>(), r => r!.AsObject());
+        Assert.Equal(6, byId.Count); // duplicates (and blanks) are located once
+        Assert.Equal(6, output["results"]!.AsArray().Count);
+        Assert.Equal("matched", byId["el-x-door"]["status"]!.GetValue<string>());
+        Assert.Equal("INSERT", byId["el-x-door"]["entity"]!["type"]!.GetValue<string>());
+        Assert.Equal(door, byId["el-x-door"]["handle"]!.GetValue<string>());
+        Assert.False(string.IsNullOrEmpty(byId["el-x-door"]["entity"]!["fingerprint"]!.GetValue<string>()));
+        Assert.Equal("matched", byId["el-x-wall"]["status"]!.GetValue<string>());
+        Assert.Equal("mismatch", byId["el-x-label"]["status"]!.GetValue<string>()); // a TEXT is not the door itself
+        Assert.Equal("handle_missing", byId["el-x-gone"]["status"]!.GetValue<string>());
+        Assert.Equal("other_drawing", byId["el-w1"]["status"]!.GetValue<string>());
+        Assert.Equal("A-501.dwg", byId["el-w1"]["source_file"]!.GetValue<string>());
+        Assert.Equal("not_found", byId["nope"]["status"]!.GetValue<string>());
+        Assert.Contains("Object not found", byId["nope"]["error"]!.GetValue<string>());
+        Assert.Equal("""{"name":"A-201.dxf","path":"C:\\Proj\\A-201.dxf"}""", output["open_drawing"]!.ToJsonString());
+        Assert.True(output["read_only"]!.GetValue<bool>());
+        Assert.Equal(new[] { door, wall }.Order(), output["matched_handles"]!.AsArray().Select(h => h!.GetValue<string>()).Order());
+        Assert.Equal("""{"matched":2,"mismatch":1,"handle_missing":1,"other_drawing":1,"not_found":1}""", output["counts"]!.ToJsonString());
+        var contexts = _fake.Requests.Where(r => r.Path.EndsWith("/context", StringComparison.Ordinal)).ToList();
+        Assert.Equal(6, contexts.Count);
+        Assert.All(contexts, r => Assert.Equal("1", r.Query["hops"]));
+
+        var bundle = Obj(await tools.AutoContext("2층 평면도 문 리스트 갱신", project_id: "P1", k: 5));
+        var flags = bundle["elements"]!["Door"]!.AsArray().ToDictionary(e => e!["id"]!.GetValue<string>(), e => e!["in_open_drawing"]!.GetValue<bool>());
+        Assert.Equal(new Dictionary<string, bool> { ["el-d1"] = true, ["el-x-door"] = true, ["el-x-label"] = true }, flags);
+        Assert.True(bundle["search"]![0]!["in_open_drawing"]!.GetValue<bool>());
+        Assert.Equal(3, bundle["counts"]!["in_open_drawing"]!.GetValue<int>()); // el-d1 is a hit and an element
+        Assert.Equal("A-201.dxf", bundle["open_drawing"]!["name"]!.GetValue<string>());
+
+        var targets = await OntologyRest.TargetsSummaryAsync(bundle, OntologyCad.Describe(doc.Describe())!.Drawing, OntologyCad.Lookup(new SimulatorGateway(doc, true), null, default));
+        Assert.Equal(["el-x-door"], targets["targets"]!.AsArray().Select(t => t!["element_id"]!.GetValue<string>()));
+        Assert.Equal("""{"handle_missing":1,"matched":1,"mismatch":1}""", targets["counts"]!.ToJsonString()); // el-d1's 2F3 is absent
+
+        Assert.Equal(commits, doc.CommitCount); // locate/auto_context never touched the drawing
+        Assert.StartsWith("[INVALID_ARGUMENT]", (await Assert.ThrowsAsync<McpException>(() => tools.Locate([]))).Message);
+        Assert.StartsWith("[INVALID_ARGUMENT]", (await Assert.ThrowsAsync<McpException>(() => tools.Locate(Enumerable.Range(0, 201).Select(i => $"e{i}").ToArray()))).Message);
+    }
+
+    [Fact]
+    public async Task Locate_pins_reads_to_the_described_document()
+    {
+        var (doc, _, door, _) = House();
+        var gateway = new SimulatorGateway(doc, readOnly: true);
+        var live = OntologyCad.Describe(doc.Describe())!;
+        Assert.NotNull(await OntologyCad.Lookup(gateway, live, default)(door));
+        Assert.Null(await OntologyCad.Lookup(gateway, live with { DocumentId = "another-drawing" }, default)(door));
+        Assert.Null(await OntologyCad.Lookup(gateway, live, default)("FFFF"));
+        Assert.Null(await OntologyCad.Lookup(null, live, default)(door));
+    }
+
+    [Fact]
+    public async Task Without_autocad_locate_and_auto_context_skip_the_drawing()
+    {
+        var dead = new DeadGateway();
+        var tools = new OntologyRestTools(Client(), dead);
+        var output = Obj(await tools.Locate(["el-d1"]));
+        Assert.Equal("other_drawing", output["results"]![0]!["status"]!.GetValue<string>());
+        Assert.Equal("no drawing is open", output["results"]![0]!["note"]!.GetValue<string>());
+        Assert.Empty(output["matched_handles"]!.AsArray());
+        Assert.Null(output["open_drawing"]);
+        Assert.True(output.ContainsKey("open_drawing"));
+
+        var bundle = Obj(await tools.AutoContext("2층 평면도 문 리스트 갱신"));
+        Assert.False(bundle.ContainsKey("open_drawing"));
+        Assert.False(bundle["search"]![0]!.AsObject().ContainsKey("in_open_drawing"));
+        Assert.False(bundle["counts"]!.AsObject().ContainsKey("in_open_drawing"));
+        Assert.Equal(2, dead.Calls);
+
+        // No gateway at all (e.g. a host without CAD tools) behaves the same.
+        var bare = Obj(await new OntologyRestTools(Client()).Locate(["el-d1"]));
+        Assert.Equal("other_drawing", bare["results"]![0]!["status"]!.GetValue<string>());
+
+        // The Ontology service being down is an error, not a per-id not_found.
+        var down = new OntologyRestTools(new OntologyRestClient("http://127.0.0.1:9", 2), dead);
+        Assert.True((await Assert.ThrowsAsync<OntologyRestException>(() => down.Locate(["el-d1"]))).Unavailable);
     }
 }
