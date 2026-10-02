@@ -594,6 +594,16 @@ def infer_task(task: str) -> dict[str, Any]:
     }
 
 
+def search_keywords(hints: dict[str, Any], drawing: str | None = None) -> list[str]:
+    """Short queries that the phrase-matching ``/v1/search`` can hit: marks, drawing, one word per class."""
+    words = list(hints.get("marks") or [])
+    if drawing:
+        words.append(drawing)
+    for cls in hints.get("classes") or []:
+        words.append(_KIND_WORDS.get(cls, cls).split()[0])
+    return _unique(w for w in words if w)
+
+
 # ------------------------------------------------------------------ composite
 def auto_context(
     client: OntologyClient,
@@ -624,7 +634,18 @@ def auto_context(
 
     bundle: dict[str, Any] = {"task": task, "drawing": drawing, "inferred": hints}
     query = task if not drawing else f"{task} {drawing}"
-    bundle["search"] = attempt("search", client.search, query, k) or []
+    found_hits = attempt("search", client.search, query, k) or []
+    if not found_hits:
+        # The API matches the whole query as one phrase (ILIKE / trigram), so a task sentence rarely
+        # hits without real embeddings; retry with the marks, drawing and one word per class.
+        keywords = search_keywords(hints, drawing)
+        for word in keywords:
+            found_hits.extend(attempt(f"search[{word}]", client.search, word, k) or [])
+            if len(_dedupe(found_hits)) >= k:
+                break
+        if found_hits:
+            warnings.append(f"search: no hit for the whole task; used keywords {keywords}.")
+    bundle["search"] = _dedupe(found_hits)[:k]
 
     mark_list: list[str | None] = list(hints["marks"]) or [None]
     elements: dict[str, list[dict[str, Any]]] = {}

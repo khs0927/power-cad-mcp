@@ -225,6 +225,7 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 
 예: `"2층 평면도 문 리스트 갱신"` → 2F의 Door 객체, 평면도·일람표 시트, Door 블록, 검색 결과를 한 번에 받습니다.
 층/시트/부호 필터로 결과가 없으면 해당 클래스 전체로 넓히고 `warnings`에 이유를 남깁니다.
+검색은 API가 질의 전체를 한 구절로 비교하므로, 작업 문장으로 결과가 없으면 부호·도면·클래스 단어(`문`, `창` …)로 다시 검색하고 `warnings`에 사용한 키워드를 남깁니다.
 
 자동화 진입점 연결: `draw_batch(operations, task="…", auto_context=true)`로 호출하거나 `POWERCAD_ONTOLOGY_AUTO_CONTEXT=1`을 켜면
 작도 전에 `ontology_auto_context(task)`가 실행되어 결과의 `ontology_context`에 붙습니다. 서비스가 꺼져 있어도 작도는 그대로 진행되고
@@ -270,6 +271,12 @@ python examples/demo_floor_plan.py --backend autocad   # 실행 중인 AutoCAD�
 
 ```powershell
 $env:POWER_CAD_LIVE_TESTS = "1"; pytest -m autocad -v
+```
+
+실제 Ontology API와의 계약 테스트 (도면이 하나 이상 적재된 API가 필요, 읽기 전용):
+
+```bash
+POWERCAD_ONTOLOGY_LIVE_URL=http://127.0.0.1:58000 pytest tests/test_ontology_live.py -v
 ```
 
 ## 문제 해결

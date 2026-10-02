@@ -188,11 +188,14 @@ class FakeOntology(BaseHTTPRequestHandler):
                 200, {"element": el, "hops": int(qs.get("hops", 1)), "edges": edges, "nodes": []}
             )
         if path == "/v1/search":
+            # Like the real API without embeddings: the whole query must occur in the search text.
             hits = [
                 {"object_id": "el-d1", "project_id": "P1", "kind": "Door", "label": "SD-01", "storey": "2층",
                  "score": 0.91, "citation": {"document_name": "A-201.dwg", "handle_or_id": "2F3",
                                              "layout_or_page": "A-201"}, "properties": {}, "relations": []}
             ][: body.get("top_k", 10)]  # fmt: skip
+            if body["query"].lower() not in "sd-01 door 2층 문 출입문 a-201":
+                hits = []
             return self._send(
                 200, {"query": body["query"], "total_hits": len(hits), "hits": hits, "warnings": []}
             )
@@ -426,8 +429,14 @@ def test_auto_context_bundle(fake_url):
     assert [d["drawing_number"] for d in bundle["drawings"]["plan"]] == ["A-201"]
     assert [d["drawing_number"] for d in bundle["drawings"]["schedule"]] == ["A-511"]
     assert [b["name"] for b in bundle["blocks"]["Door"]] == ["DOOR_SINGLE"]
+    # The whole sentence matches nothing; the class keyword "문" finds the door.
     assert bundle["search"][0]["id"] == "el-d1"
-    assert bundle["counts"]["elements"] == {"Door": 1} and bundle["warnings"] == []
+    assert [r[3]["query"] for r in FakeOntology.requests if r[1] == "/v1/search"][-2:] == [
+        "2층 평면도 문 리스트 갱신",
+        "문",
+    ]
+    assert bundle["counts"]["elements"] == {"Door": 1}
+    assert bundle["warnings"] == ["search: no hit for the whole task; used keywords ['문']."]
 
     bundle = auto_context(client, "창호상세도에 AW-02 추가")
     assert [w["name"] for w in bundle["elements"]["Window"]] == ["AW-02"]
