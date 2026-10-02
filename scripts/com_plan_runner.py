@@ -140,16 +140,21 @@ def com_lookup(doc) -> Callable[[str], dict[str, Any] | None]:
     from power_cad_mcp.backends.com_backend import dxf_type  # noqa: PLC0415 - no COM import at module level
 
     def lookup(handle: str) -> dict[str, Any] | None:
-        o = get(doc, handle)
-        if o is None:
+        # Model space only: a handle of a layer record, a block-definition entity or a paper-space
+        # entity is not something the plan may edit, and any COM failure reads as "not there".
+        try:
+            o = get(doc, handle)
+            if o is None or o.OwnerID != doc.ModelSpace.ObjectID:
+                return None
+            out = {"handle": o.Handle, "type": dxf_type(o.ObjectName), "layer": o.Layer}
+            if out["type"] == "INSERT":
+                name = None
+                with contextlib.suppress(Exception):
+                    name = o.EffectiveName
+                out["name"] = name or o.Name
+            return out
+        except Exception:  # noqa: BLE001
             return None
-        out = {"handle": o.Handle, "type": dxf_type(o.ObjectName), "layer": o.Layer}
-        if out["type"] == "INSERT":
-            name = None
-            with contextlib.suppress(Exception):
-                name = o.EffectiveName
-            out["name"] = name or o.Name
-        return out
 
     return lookup
 
@@ -163,6 +168,25 @@ def _handle_slots(op: dict[str, Any]) -> list[str]:
     if op.get("handle"):
         slots.append(op["handle"])
     return slots
+
+
+def _duplicate_handles(op: dict[str, Any], mapping: dict[str, str] | None = None) -> list[str]:
+    """Handles named twice within one slot (expect keys, or `handles`), compared case-insensitively.
+
+    AutoCAD handles are case-insensitive, so ``aa4`` and ``AA4`` are the same entity. The same handle in
+    `expect` *and* `handles` (e.g. scale) is one target named in two places, not a duplicate.
+    """
+    mapping = mapping or {}
+    groups = [list(op["expect"]) if isinstance(op.get("expect"), dict) else [], list(op.get("handles") or [])]
+    dups: list[str] = []
+    for group in groups:
+        seen: set[str] = set()
+        for h in group:
+            key = str(mapping.get(h, h)).upper()
+            if key in seen and key not in dups:
+                dups.append(key)
+            seen.add(key)
+    return dups
 
 
 def _substitute(op: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
@@ -195,7 +219,10 @@ def resolve_elements(
     errors: list[str] = []
     ids = [str(eid) for op in named if isinstance(op["elements"], dict) for eid in op["elements"].values()]
     report = _ontology().locate(client, ids, open_drawing, lookup)
-    by_id = {r["element_id"]: r for r in report["results"]}
+    # locate answers in request order (stripped, de-duplicated); key by the requested id so an API that
+    # answers with another element's row cannot be mistaken for a missing one.
+    requested = list(dict.fromkeys(i.strip() for i in ids if i.strip()))
+    by_id = dict(zip(requested, report["results"], strict=True))
 
     resolved_ops, log = [], []
     for op in ops:
@@ -218,6 +245,9 @@ def resolve_elements(
             log.append(entry)
             if key not in slots:
                 errors.append(f"{tag}: elements key {key!r} is not used by the op (expect/handles/handle)")
+            if str(r.get("error") or "").startswith("API returned element"):
+                errors.append(f"{tag}: element {eid}: {r['error']}")
+                continue
             if r["status"] != "matched":
                 detail = "; ".join(r.get("reasons") or []) or r.get("note") or r.get("error") or ""
                 errors.append(
@@ -233,7 +263,7 @@ def resolve_elements(
         if dangling:
             errors.append(f"{tag}: {dangling} have no entry in elements")
         new = _substitute(op, mapping)
-        if len(set(_handle_slots(new))) < len(set(slots)):
+        if _duplicate_handles(op, mapping):
             errors.append(f"{tag}: two targets resolve to the same handle")
         new.pop("elements", None)
         resolved_ops.append(new)
@@ -250,6 +280,10 @@ def validate(doc, plan) -> list[str]:
     for op in plan["ops"]:
         tag = f"[{op['id']}] {op['op']}"
         kind = op["op"]
+        dups = _duplicate_handles(op)
+        if dups:
+            errors.append(f"{tag}: duplicate target handles {dups} (handles are case-insensitive)")
+            continue
         if kind == "replace_polylines":
             for h, pts in op["expect"].items():
                 o = get(doc, h)
@@ -410,8 +444,8 @@ def main() -> int:
         try:
             client = onto.OntologyClient(url, token=os.environ.get("POWERCAD_ONTOLOGY_TOKEN"))
             plan, resolved, errors = resolve_elements(plan, client, open_drawing_info(doc), com_lookup(doc))
-        except onto.OntologyError as exc:
-            errors = [str(exc)]
+        except Exception as exc:  # noqa: BLE001 - any resolution failure refuses the plan, no traceback
+            errors = [str(exc) if isinstance(exc, onto.OntologyError) else f"{type(exc).__name__}: {exc}"]
         if errors:
             out = {"ok": False, "stage": "resolve", "errors": errors, "resolved": resolved}
             print(json.dumps(out, ensure_ascii=False, indent=1))

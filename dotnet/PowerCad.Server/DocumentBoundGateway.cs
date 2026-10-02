@@ -9,7 +9,14 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _documentId;
+    private JsonObject? _boundIdentity;
     public string Mode => inner.Mode;
+
+    /// <summary>The document_id this client is bound to, or null when unbound.</summary>
+    public string? BoundDocumentId => _documentId;
+
+    /// <summary>The document_identity answer captured when the binding was made (name/path of the bound drawing).</summary>
+    public JsonObject? BoundDocument => _boundIdentity?.DeepClone() as JsonObject;
 
     public async Task<JsonNode?> SendAsync(string command, JsonObject? parameters, CancellationToken ct)
     {
@@ -25,6 +32,7 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
                 if (identity?["document_id"]?.GetValue<string>() != id)
                     throw new CadException(ErrorCodes.PluginOutdated, "The plugin does not support document binding.");
                 _documentId = id;
+                _boundIdentity = identity?.DeepClone() as JsonObject;
                 return identity;
             }
 
@@ -60,6 +68,7 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
         {
             var result = inner.SelectTarget(target);
             _documentId = null;
+            _boundIdentity = null;
             return result;
         }
         finally { _gate.Release(); }

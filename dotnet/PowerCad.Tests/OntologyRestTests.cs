@@ -656,7 +656,9 @@ public sealed class OntologyRestTests
     {
         var info = new JsonObject { ["name"] = "A-201.dxf", ["path"] = "/tmp/x/A-201.dxf" };
         Assert.True(OntologyRest.InDrawing("A-201.dwg", info)); // the DWG the element came from = its DXF copy
-        Assert.True(OntologyRest.InDrawing(@"C:\Proj\a-201.DWG", info));
+        Assert.False(OntologyRest.InDrawing(@"C:\Proj\a-201.DWG", info)); // same basename, another folder
+        Assert.True(OntologyRest.InDrawing("/TMP/x//A-201.DWG", info)); // same folder: case, separators and extension ignored
+        Assert.True(OntologyRest.InDrawing(@"\tmp\x\a-201.dwg", info));
         Assert.False(OntologyRest.InDrawing("A-501.dwg", info));
         Assert.Null(OntologyRest.InDrawing((string?)null, info));
         Assert.Null(OntologyRest.InDrawing("A-201.dwg", null));
@@ -885,7 +887,9 @@ public sealed class OntologyRestTests
         var gateway = new SimulatorGateway(doc, readOnly: true);
         var live = OntologyCad.Describe(doc.Describe())!;
         Assert.NotNull(await OntologyCad.Lookup(gateway, live, default)(door));
-        Assert.Null(await OntologyCad.Lookup(gateway, live with { DocumentId = "another-drawing" }, default)(door));
+        // A drawing switch is an error, never "handle missing".
+        var changed = await Assert.ThrowsAsync<PowerCad.Core.CadException>(() => OntologyCad.Lookup(gateway, live with { DocumentId = "another-drawing" }, default)(door));
+        Assert.Equal(PowerCad.Core.ErrorCodes.DocumentChanged, changed.Code);
         Assert.Null(await OntologyCad.Lookup(gateway, live, default)("FFFF"));
         Assert.Null(await OntologyCad.Lookup(null, live, default)(door));
     }
@@ -915,5 +919,146 @@ public sealed class OntologyRestTests
         // The Ontology service being down is an error, not a per-id not_found.
         var down = new OntologyRestTools(new OntologyRestClient("http://127.0.0.1:9", 2), dead);
         Assert.True((await Assert.ThrowsAsync<OntologyRestException>(() => down.Locate(["el-d1"]))).Unavailable);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Proj\A-201.DWG", "c:/proj/a-201")]
+    [InlineData(@"C:\\Proj//Sub\a-201.dxf", "c:/proj/sub/a-201")]
+    [InlineData("/srv/drawings/A-201.dxf", "/srv/drawings/a-201")]
+    [InlineData("A-201.dwg", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Drawing_path_key(string? name, string? key) => Assert.Equal(key, OntologyRest.DrawingPathKey(name));
+
+    [Fact]
+    public async Task Same_basename_in_another_folder_is_another_drawing()
+    {
+        var open = new JsonObject { ["name"] = "A-201.dwg", ["path"] = @"C:\ProjA\A-201.dwg" };
+        var lookup = new FakeLookup(JsonNode.Parse("""{"handle": "1A", "type": "INSERT", "layer": "A-DOOR", "name": "DOOR_SINGLE"}""")!.AsObject());
+        var other = await Match(With(Door(), "source_file", @"C:\ProjB\A-201.dwg"), open, lookup);
+        Assert.Equal("other_drawing", other["status"]!.GetValue<string>());
+        Assert.False(other.ContainsKey("note"));
+        Assert.Empty(lookup.Calls);
+        var same = await Match(With(Door(), "source_file", @"c:/proja/a-201.DXF"), open, lookup);
+        Assert.Equal("matched", same["status"]!.GetValue<string>());
+        // Only the element has no folder: the basename is all that can be compared, and it still matches.
+        var bare = await Match(With(Door(), "source_file", "a-201.dxf"), open, lookup);
+        Assert.Equal("matched", bare["status"]!.GetValue<string>());
+        Assert.Equal(["1A", "1A"], lookup.Calls);
+    }
+
+    [Fact]
+    public async Task Unsaved_or_default_named_drawings_are_never_matched()
+    {
+        var lookup = new FakeLookup(JsonNode.Parse("""{"handle": "1A", "type": "INSERT", "layer": "A-DOOR", "name": "DOOR_SINGLE"}""")!.AsObject());
+        // AutoCAD's new drawing: Drawing1.dwg with no saved path.
+        var drawing1 = new JsonObject { ["name"] = "Drawing1.dwg" };
+        var r = await Match(With(Door(), "source_file", "Drawing1.dwg"), drawing1, lookup);
+        Assert.Equal("other_drawing", r["status"]!.GetValue<string>());
+        Assert.Equal("open drawing is unsaved/default-named; cannot prove it is the source file", r["note"]!.GetValue<string>());
+        // A default name never proves anything, even with a saved path on both sides.
+        var saved1 = new JsonObject { ["name"] = "DRAWING12.dwg", ["path"] = @"C:\Tmp\DRAWING12.dwg" };
+        r = await Match(With(Door(), "source_file", @"C:\Tmp\Drawing12.dwg"), saved1, lookup);
+        Assert.Equal("other_drawing", r["status"]!.GetValue<string>());
+        Assert.Contains("cannot prove", r["note"]!.GetValue<string>());
+        // An open drawing with no saved path (bare name), even when the name is not a default one.
+        r = await Match(Door(), new JsonObject { ["name"] = "A-201.dwg" }, lookup);
+        Assert.Equal("other_drawing", r["status"]!.GetValue<string>());
+        Assert.Contains("unsaved", r["note"]!.GetValue<string>());
+        Assert.False(OntologyRest.InDrawing("A-201.dwg", new JsonObject { ["name"] = "A-201.dwg" }));
+        // A different name is just another drawing.
+        r = await Match(With(Door(), "source_file", "B.dwg"), drawing1, lookup);
+        Assert.Equal("other_drawing", r["status"]!.GetValue<string>());
+        Assert.False(r.ContainsKey("note"));
+        Assert.Empty(lookup.Calls);
+        Assert.True(OntologyRest.IsDefaultDrawingName("drawing"));
+        Assert.False(OntologyRest.IsDefaultDrawingName("drawing-a"));
+    }
+
+    [Fact]
+    public async Task Without_a_positive_signal_an_entity_is_unverified()
+    {
+        // No class the matcher knows, no layer and no block: nothing is against the LINE, but nothing ties it to the element.
+        var element = JsonNode.Parse("""{"id": "el-u", "class": "Thing", "source_file": "A-201.dwg", "handle": "B1"}""")!.AsObject();
+        var line = JsonNode.Parse("""{"handle": "B1", "type": "LINE", "layer": "0"}""")!.AsObject();
+        var r = await Match(element, OpenA201(), new FakeLookup(line));
+        Assert.Equal("unverified", r["status"]!.GetValue<string>());
+        Assert.Contains("nothing ties", r["note"]!.GetValue<string>());
+        Assert.Equal("matched", (await Match(With(element, "layer", "0"), OpenA201(), new FakeLookup(line)))["status"]!.GetValue<string>());
+        var insert = JsonNode.Parse("""{"handle": "B1", "type": "INSERT", "layer": "0", "name": "CHAIR"}""")!.AsObject();
+        Assert.Equal("matched", (await Match(With(element, "block_name", "chair"), OpenA201(), new FakeLookup(insert)))["status"]!.GetValue<string>());
+        Assert.Equal("matched", (await Match(With(element, "class", "Wall"), OpenA201(), new FakeLookup(line)))["status"]!.GetValue<string>());
+
+        var bundle = new JsonObject { ["search"] = new JsonArray(element) };
+        var targets = await OntologyRest.TargetsSummaryAsync(bundle, OpenA201(), new FakeLookup(line).Find);
+        Assert.Equal("""{"unverified":1}""", targets["counts"]!.ToJsonString());
+        Assert.Empty(targets["targets"]!.AsArray());
+        Assert.Equal("""["el-u: unverified"]""", targets["not_actionable"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Locate_checks_the_bound_drawing_not_just_the_active_one()
+    {
+        var (doc, _, door, _) = House();
+        _fake.Extra.Add(FakeOntology.Element("el-x-door", "Door", "SD-01", "A-201", "Model", "2층", "A-DOOR", "DOOR_SINGLE", door));
+        var inner = new SwitchableGateway { Current = new SimulatorGateway(doc, readOnly: false) };
+        await using var bound = new DocumentBoundGateway(inner);
+        await bound.SendAsync("bind_document", new JsonObject { ["document_id"] = doc.DocumentId }, default);
+        Assert.Equal(doc.DocumentId, bound.BoundDocumentId);
+        var tools = new OntologyRestTools(Client(), bound);
+        Assert.Equal("matched", Obj(await tools.Locate(["el-x-door"]))["results"]![0]!["status"]!.GetValue<string>());
+
+        // The user switches to another drawing: locate must not describe it (nor report handles as missing).
+        var other = new PowerCad.Core.Simulation.InMemoryCadDocument { Name = @"C:\Proj\B-100.dwg" };
+        inner.Current = new SimulatorGateway(other, readOnly: false);
+        var output = Obj(await tools.Locate(["el-x-door"]));
+        Assert.Equal(@"bound to C:\Proj\A-201.dxf, active drawing is C:\Proj\B-100.dwg", output["error"]!.GetValue<string>());
+        Assert.Equal(PowerCad.Core.ErrorCodes.DocumentChanged, output["code"]!.GetValue<string>());
+        Assert.False(output.ContainsKey("results"));
+        var bundle = Obj(await tools.AutoContext("2층 평면도 문 리스트 갱신"));
+        Assert.StartsWith("bound to", bundle["open_drawing_error"]!.GetValue<string>());
+        Assert.False(bundle.ContainsKey("open_drawing"));
+
+        // A drawing switch between describing and the handle read surfaces as an error, not handle_missing.
+        inner.Current = new SimulatorGateway(doc, readOnly: false);
+        var live = await OntologyCad.OpenDrawingAsync(bound, default);
+        inner.Current = new SimulatorGateway(other, readOnly: false);
+        var changed = await Assert.ThrowsAsync<PowerCad.Core.CadException>(() => OntologyCad.Lookup(bound, live, default)(door));
+        Assert.Equal(PowerCad.Core.ErrorCodes.DocumentChanged, changed.Code);
+    }
+
+    private sealed class SwitchableGateway : ICadGateway
+    {
+        public required SimulatorGateway Current { get; set; }
+
+        public string Mode => Current.Mode;
+
+        public Task<JsonNode?> SendAsync(string command, JsonObject? parameters, CancellationToken ct) => Current.SendAsync(command, parameters, ct);
+
+        public JsonArray ListTargets() => Current.ListTargets();
+
+        public JsonObject SelectTarget(string target) => Current.SelectTarget(target);
+    }
+
+    [Theory]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData(" ... ")]
+    public async Task Dot_only_element_ids_are_rejected(string id)
+    {
+        var tools = new OntologyRestTools(Client());
+        Assert.StartsWith("[INVALID_ARGUMENT]", (await Assert.ThrowsAsync<McpException>(() => tools.Locate(["el-d1", id]))).Message);
+        Assert.StartsWith("[INVALID_ARGUMENT]", (await Assert.ThrowsAsync<McpException>(() => tools.ElementContext(id))).Message);
+        Assert.StartsWith("[INVALID_ARGUMENT]", (await Assert.ThrowsAsync<OntologyRestException>(() => Client().ElementContextAsync(id))).Message);
+        Assert.DoesNotContain(_fake.Requests, r => r.Path.EndsWith("/context", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Compact_block_keeps_effective_names_and_flags()
+    {
+        var row = JsonNode.Parse("""{"name": "*U12", "effective_names": ["DOOR_SINGLE"], "is_xref": false, "is_anonymous": true, "instance_count": 3}""")!.AsObject();
+        Assert.Equal("""{"name":"*U12","instance_count":3,"effective_names":["DOOR_SINGLE"],"is_anonymous":true}""", OntologyRest.CompactBlock(row).ToJsonString());
+        var xref = JsonNode.Parse("""{"name": "SITE", "is_xref": 1}""")!.AsObject();
+        Assert.Equal("""{"name":"SITE","is_xref":true}""", OntologyRest.CompactBlock(xref).ToJsonString());
     }
 }

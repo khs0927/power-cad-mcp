@@ -200,3 +200,31 @@ def test_live_plan_runner_resolves_element_ids():
     assert log[0]["status"] == "matched" and log[0]["handle"].upper() == wall["handle"].upper()
     assert resolved["ops"][0]["expect"] == {log[0]["handle"]: "AcDbPolyline"}
     assert len(errors) == 1 and errors[0].startswith("[x] delete: element obs_missing is not_found")
+
+
+@pytest.mark.anyio
+async def test_live_census_check(tmp_path):
+    """ontology_census_check on simple_house.dxf: the fixture is ingested, every Ontology handle is an
+    entity of the file, and the Ontology's per-layer counts equal the census's."""
+    fixtures = _fixture_dir()
+    fixture = fixtures / "simple_house.dxf" if fixtures else None
+    if not (fixture and fixture.is_file()):
+        pytest.skip("Ontology fixture simple_house.dxf not available")
+    std = Path(__file__).resolve().parents[1] / "docs" / "standards" / "floor_plan_standard.json"
+    settings = Settings(backend="dxf", workspace=str(tmp_path), ontology_url=LIVE_URL, ontology_timeout=30)
+    async with Client(create_server(DxfBackend(), settings)) as client:
+        call = ToolCaller(client)
+        out = await call("ontology_census_check", path=str(fixture), standard=str(std))
+        if not out["ingested"]:
+            pytest.skip("simple_house.dxf is not ingested in this Ontology")
+        assert out["read_only"] is True and out["census"]["complete"] is True
+        handles = out["handles"]
+        assert handles["in_both"] > 0 and handles["only_in_ontology_count"] == 0, handles
+        compared = [row for row in out["layers"] if row["status"] in ("equal", "differs")]
+        assert compared and all(row["status"] == "equal" for row in compared), out["layers"]
+        classes = {row["class"]: row for row in out["classes"]}
+        door = classes.get("Door")
+        if door:  # simple_house uses A-DOOR, which the ZIUM standard does not map: honest "no layer"
+            assert door["census_entities_on_those_layers"] >= door["ontology_elements"]
+            assert door["zium"] == "no layer of this drawing maps to DOOR", door
+        assert any(n["reason"] for n in out["not_comparable"])

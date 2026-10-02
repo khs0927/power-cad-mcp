@@ -619,7 +619,11 @@ def test_drawing_key(name, key):
 def test_in_drawing():
     info = {"name": "A-201.dxf", "path": "/tmp/x/A-201.dxf"}
     assert in_drawing("A-201.dwg", info) is True  # the DWG the element came from = its DXF copy
-    assert in_drawing("C:\\Proj\\a-201.DWG", info) is True
+    assert in_drawing("a-201.DWG", info) is True
+    # Folder on both sides: the full path decides (same name in another folder is another drawing).
+    assert in_drawing("C:\\Proj\\a-201.DWG", info) is False
+    assert in_drawing("/TMP/x/a-201.DWG", info) is True
+    assert in_drawing("C:\\Proj\\A-201.dwg", {"name": "A-201.dwg", "path": "c://PROJ//a-201.dxf"}) is True
     assert in_drawing("A-501.dwg", info) is False
     assert in_drawing(None, info) is None and in_drawing("A-201.dwg", None) is None
     assert in_drawing("A-201.dwg", {"name": "", "path": None}) is None
@@ -691,6 +695,53 @@ def test_match_element_statuses():
     }
 
 
+UNPROVABLE = "open drawing is unsaved/default-named; cannot prove it is the source file"
+
+
+def test_match_element_drawing_identity():
+    insert = {"handle": "1A", "type": "INSERT", "layer": "A-DOOR", "name": "DOOR_SINGLE"}
+    lookup = _lookup({"1A": insert})
+    full = DOOR | {"source_file": "C:\\Proj\\A-201.dwg"}
+    # Same base name, different folders: another drawing, the handle is never looked up.
+    other = match_element(full, {"name": "A-201.dwg", "path": "D:\\Copy\\A-201.dwg"}, lookup)
+    assert other["status"] == "other_drawing" and "note" not in other and lookup.calls == []
+    same = match_element(full, {"name": "A-201.dwg", "path": "c:/proj//a-201.DXF"}, lookup)
+    assert same["status"] == "matched"
+    # Base-name fallback when one side has no folder.
+    assert (
+        match_element(DOOR, {"name": "A-201.dwg", "path": "D:\\Copy\\A-201.dwg"}, lookup)["status"]
+        == "matched"
+    )
+    # Unsaved or default-named open drawing: never matched.
+    unsaved = match_element(DOOR, {"name": "A-201.dwg", "path": None}, lookup)
+    assert unsaved["status"] == "other_drawing" and unsaved["note"] == UNPROVABLE
+    drawing1 = DOOR | {"source_file": "Drawing1.dwg"}
+    default = match_element(drawing1, {"name": "Drawing1.dwg", "path": "C:\\x\\Drawing1.dwg"}, lookup)
+    assert default["status"] == "other_drawing" and default["note"] == UNPROVABLE
+    assert match_element(DOOR, {"name": "Drawing3.dwg", "path": None}, lookup).get("note") is None
+
+
+def test_match_element_needs_a_positive_signal():
+    bare = {"id": "el-7", "class": "Thing", "source_file": "A-201.dwg", "handle": "1A"}
+    line = {"handle": "1A", "type": "LINE", "layer": "X"}
+    out = match_element(bare, OPEN, _lookup({"1A": line}))
+    assert out["status"] == "unverified"
+    assert (
+        out["note"] == "nothing ties the entity to the element (no known class, matching layer or block name)"
+    )
+    assert match_element(bare | {"layer": "x"}, OPEN, _lookup({"1A": line}))["status"] == "matched"
+    summary = targets_summary({"elements": {"Thing": [bare]}}, OPEN, _lookup({"1A": line}))
+    assert summary["counts"] == {"unverified": 1} and summary["targets"] == []
+    assert summary["not_actionable"] == ["el-7: unverified"]
+
+
+def test_dot_element_ids_are_rejected():
+    client = OntologyClient("http://127.0.0.1:9")
+    for bad in (".", "..", " ... "):
+        with pytest.raises(OntologyError, match="not a valid element id"):
+            client.element_context(bad)
+
+
 def test_targets_summary_uses_bundle_only():
     bundle = {
         "search": [DOOR],
@@ -720,16 +771,25 @@ def test_auto_context_project_and_open_drawing(fake_url):
         "2층 평면도 문 리스트 갱신",
         project_id="P1",
         k=3,
-        open_drawing={"name": "a-201.dxf", "path": None},
+        open_drawing={"name": "a-201.dxf", "path": "/w/a-201.dxf"},
     )
     gets = [qs for m, path, qs, _ in FakeOntology.requests if m == "GET"]
     posts = [body for m, _, _, body in FakeOntology.requests if m == "POST"]
     assert gets and all(qs.get("project_id") == "P1" for qs in gets)  # elements, drawings, blocks
     assert posts and all(b["project_id"] == "P1" and b["top_k"] == 3 for b in posts)
-    assert bundle["project_id"] == "P1" and bundle["open_drawing"] == {"name": "a-201.dxf"}
+    assert bundle["project_id"] == "P1" and bundle["open_drawing"] == {
+        "name": "a-201.dxf",
+        "path": "/w/a-201.dxf",
+    }
     assert bundle["search"][0]["in_open_drawing"] is True
     assert bundle["elements"]["Door"][0]["in_open_drawing"] is True
     assert bundle["counts"]["in_open_drawing"] == 1  # el-d1 appears as a hit and as an element
+
+    # An unsaved drawing of the same name proves nothing: not tagged as the open drawing.
+    unsaved = auto_context(
+        client, "2층 평면도 문 리스트 갱신", open_drawing={"name": "a-201.dxf", "path": None}
+    )
+    assert unsaved["elements"]["Door"][0]["in_open_drawing"] is False
 
     bundle = auto_context(client, "문 리스트", open_drawing={"name": "A-501.dxf"})
     assert {e["id"]: e["in_open_drawing"] for e in bundle["elements"]["Door"]} == {
@@ -870,6 +930,13 @@ def test_block_candidates_rules():
     assert "parsed it from this drawing" in other["DOOR_FIRE"]["note"]  # A-201 is open but lacks it
     assert out["counts"] == {"ontology_blocks": 5, "insertable": 2, "other_files": 2, "not_insertable": 2}
     assert out["project_id"] == "P1" and out["read_only"] is True and "next_step" in out
+
+    # The open drawing's definition of that name is an xref: not insertable, and not re-listed as local.
+    xref_live = [{"name": "DOOR_FIRE", "xref": True}]
+    out = block_candidates(_BlockClient(items), "DOOR*", xref_live, OPEN)
+    assert "DOOR_FIRE" not in {c.get("insert_name") for c in out["insertable"]}
+    fire = next(c for c in out["not_insertable"] if c["ontology_name"] == "DOOR_FIRE")
+    assert "external reference" in fire["reason"]
 
     # A task selects blocks by class; a failing query is a warning, an unreadable drawing is "unverified".
     client = _BlockClient(items[3:], fail="Window")

@@ -32,6 +32,7 @@ __all__ = [
     "auto_context",
     "block_candidates",
     "compact_element",
+    "drawing_identity",
     "drawing_key",
     "in_drawing",
     "infer_task",
@@ -272,9 +273,58 @@ class OntologyClient:
             sheets = [r for r in sheets if q.lower() in json.dumps(r, ensure_ascii=False).lower()] or sheets
         return {"items": sheets[:limit], "next_cursor": next_cursor}
 
+    def documents(
+        self,
+        accept: Callable[[dict[str, Any]], bool] | None = None,
+        *,
+        project_id: str | None = None,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Raw ``/v1/drawings`` documents (one per ingested file, with its sheets), every page read."""
+        out: list[dict[str, Any]] = []
+        cursor = None
+        for _ in range(max_pages):
+            payload = self.get("/v1/drawings", project_id=project_id, limit=MAX_PAGE, cursor=cursor)
+            out.extend(r for r in rows(payload, "drawings") if accept is None or accept(r))
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                break
+        return out
+
+    def document_elements(
+        self, document_id: str, *, project_id: str | None = None, max_rows: int = 100_000
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Every element of one ingested document (``/v1/elements?document_id=``), with properties.
+
+        Rows of other documents are dropped here too, for an API that ignores ``document_id``.
+        Returns ``(elements, truncated)``; ``truncated`` is True when ``max_rows`` stopped the paging.
+        """
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            payload = self.get(
+                "/v1/elements",
+                document_id=document_id,
+                project_id=project_id,
+                include_properties="true",
+                limit=MAX_PAGE,
+                cursor=cursor,
+            )
+            for row in rows(payload, "elements"):
+                element = compact_element(row)
+                if element.get("document_id") in (None, document_id):
+                    out.append(element)
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                return out, False
+            if len(out) >= max_rows:
+                return out, True
+
     def element_context(self, element_id: str, hops: int = 1) -> Any:
         if not str(element_id).strip():
             raise OntologyError("element_id must not be empty.")
+        if set(str(element_id).strip()) == {"."}:
+            raise OntologyError(f"element_id {element_id!r} is not a valid element id.")
         quoted = urllib.parse.quote(str(element_id), safe="")
         return self.get(f"/v1/elements/{quoted}/context", hops=min(max(int(hops), 1), 2))
 
@@ -828,13 +878,49 @@ def _drawing_label(open_drawing: dict[str, Any]) -> dict[str, Any]:
     return _drop_empty({"name": open_drawing.get("name"), "path": open_drawing.get("path")})
 
 
+# AutoCAD's names for a new, never-saved drawing (Drawing1.dwg ...): such a name proves nothing.
+_DEFAULT_NAME = re.compile(r"^drawing\d*$", re.IGNORECASE)
+UNPROVABLE_NOTE = "open drawing is unsaved/default-named; cannot prove it is the source file"
+
+
+def _folder_and_key(name: Any) -> tuple[str | None, str | None]:
+    """``'C:\\Proj\\A-201.DWG'`` -> ``('c:/proj', 'a-201')``; the folder is None for a bare file name."""
+    text = str(name or "").strip().strip('"')
+    key = drawing_key(text)
+    norm = re.sub(r"/+", "/", text.replace("\\", "/"))
+    if not key or "/" not in norm:
+        return None, key
+    return norm.rsplit("/", 1)[0].lower() or "/", key
+
+
+def drawing_identity(source_file: Any, open_drawing: dict[str, Any] | None) -> tuple[bool | None, str | None]:
+    """Is ``source_file`` the open drawing? ``(True/False/None, note)``; None = cannot tell.
+
+    With a folder on both sides the normalised full paths are compared (folder + name, case-insensitive,
+    ``\\`` = ``/``, repeated ``/`` collapsed, ``.dwg`` = ``.dxf``); otherwise the base names. When the
+    names match but the open drawing has no saved path or a default name (``Drawing1``), that is no
+    proof: ``(None, UNPROVABLE_NOTE)``.
+    """
+    keys = _drawing_keys(open_drawing)
+    if not keys:
+        return None, "no drawing is open"
+    src_folder, src_key = _folder_and_key(source_file)
+    if not src_key:
+        return None, "the element has no source_file"
+    path = open_drawing.get("path") if isinstance(open_drawing, dict) else None
+    open_folder, path_key = _folder_and_key(path)
+    full = bool(src_folder and open_folder)  # folder on both sides: the full path decides
+    same = (src_folder, src_key) == (open_folder, path_key) if full else src_key in keys
+    if not same:
+        return False, None
+    if not path or any(_DEFAULT_NAME.match(k) for k in keys):
+        return None, UNPROVABLE_NOTE
+    return True, None
+
+
 def in_drawing(source_file: Any, open_drawing: dict[str, Any] | None) -> bool | None:
     """True when ``source_file`` is the open drawing, False when it is another one, None when unknown."""
-    key = drawing_key(source_file)
-    keys = _drawing_keys(open_drawing)
-    if not key or not keys:
-        return None
-    return key in keys
+    return drawing_identity(source_file, open_drawing)[0]
 
 
 def entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
@@ -868,6 +954,24 @@ def plausibility(element: dict[str, Any], entity: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def positive_signals(element: dict[str, Any], entity: dict[str, Any]) -> list[str]:
+    """What ties the live entity to the element: a known class of a fitting entity type, the same layer,
+    or the same block name. :func:`match_element` reports ``unverified`` when there is none."""
+    signals: list[str] = []
+    etype = str(entity.get("type") or "").upper()
+    cls = str(element.get("class") or "")
+    if cls in _PHYSICAL_CLASSES or cls in _TEXT_CLASSES:
+        signals.append("class")
+    layer = str(element.get("layer") or "")
+    if layer and layer.lower() == str(entity.get("layer") or "").lower():
+        signals.append("layer")
+    block = str(element.get("block_name") or "")
+    name = str(entity.get("name") or "")
+    if block and etype == "INSERT" and (name.lower() == block.lower() or name.startswith("*")):
+        signals.append("block")
+    return signals
+
+
 def match_element(
     element: dict[str, Any] | None,
     open_drawing: dict[str, Any] | None,
@@ -878,9 +982,12 @@ def match_element(
     """Decide whether an Ontology element can be acted on in the open drawing. Never edits anything.
 
     ``lookup(handle)`` returns the live entity dict or None when the handle does not exist.
-    Status: ``matched`` (same drawing, handle exists, entity plausible), ``mismatch`` (handle exists but
-    the entity does not look like the element), ``handle_missing`` (same drawing, no such entity / no
-    handle recorded), ``other_drawing`` (another file, or the open drawing is unknown) or ``not_found``.
+    Status: ``matched`` (same saved drawing, handle exists, entity plausible with at least one positive
+    signal), ``unverified`` (handle exists and nothing contradicts, but nothing ties the entity to the
+    element either), ``mismatch`` (handle exists but the entity does not look like the element),
+    ``handle_missing`` (same drawing, no such entity / no handle recorded), ``other_drawing`` (another
+    file, or the open drawing is unknown / unsaved / default-named) or ``not_found``. Only ``matched``
+    is actionable.
     """
     label = _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None
     if not element:
@@ -895,14 +1002,9 @@ def match_element(
         "sheet": element.get("sheet"),
         "open_drawing": label,
     }
-    same = in_drawing(element.get("source_file"), open_drawing)
+    same, note = drawing_identity(element.get("source_file"), open_drawing)
     if not same:
-        out["status"] = "other_drawing"
-        if same is None:
-            out["note"] = (
-                "no drawing is open" if not _drawing_keys(open_drawing) else "the element has no source_file"
-            )
-        return _drop_empty(out)
+        return _drop_empty(out | {"status": "other_drawing", "note": note})
     if not handle:
         return _drop_empty(out | {"status": "handle_missing", "note": "the element has no handle"})
     entity = lookup(handle)
@@ -916,6 +1018,9 @@ def match_element(
     reasons = plausibility(element, entity)
     if reasons:
         return _drop_empty(out | {"status": "mismatch", "reasons": reasons})
+    if not positive_signals(element, entity):
+        note = "nothing ties the entity to the element (no known class, matching layer or block name)"
+        return _drop_empty(out | {"status": "unverified", "note": note})
     return _drop_empty(out | {"status": "matched"})
 
 
@@ -940,6 +1045,8 @@ def locate(
         try:
             element = element_of(client.element_context(raw_id, hops=1))
             error = None
+            if element is not None and str(element.get("id")) != raw_id:
+                element, error = None, f"API returned element {element.get('id')}"
         except OntologyUnavailable:
             raise
         except OntologyError as exc:
@@ -1003,7 +1110,7 @@ def targets_summary(
                     }
                 )
             )
-        elif result["status"] in ("mismatch", "handle_missing") and len(other) < limit:
+        elif result["status"] in ("mismatch", "handle_missing", "unverified") and len(other) < limit:
             other.append(f"{result.get('element_id')}: {result['status']}")
     out: dict[str, Any] = {
         "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
@@ -1103,6 +1210,12 @@ def block_candidates(
         hit = next((live[n.lower()] for n in names if n.lower() in live), None)
         if block.get("is_xref"):
             not_insertable.append(info | {"reason": "external reference (xref), not a block to insert"})
+        elif hit is not None and hit.get("xref"):
+            used.add(str(hit["name"]).lower())
+            not_insertable.append(
+                info
+                | {"reason": f"the open drawing's definition {hit['name']!r} is an external reference (xref)"}
+            )
         elif hit is not None:
             used.add(str(hit["name"]).lower())
             insertable.append(

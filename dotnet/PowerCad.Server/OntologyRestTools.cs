@@ -410,6 +410,11 @@ public sealed class OntologyRestClient
             throw new OntologyRestException("element_id must not be empty.");
         }
 
+        if (elementId.Trim().All(c => c == '.'))
+        {
+            throw new OntologyRestException("element_id must not consist only of dots.", code: "INVALID_ARGUMENT");
+        }
+
         var quoted = Uri.EscapeDataString(elementId);
         return GetAsync($"/v1/elements/{quoted}/context", [new("hops", Math.Clamp(hops, 1, 2).ToString(CultureInfo.InvariantCulture))], ct);
     }
@@ -744,7 +749,10 @@ public static partial class OntologyRest
             ("instance_kinds", Pick(row, "instance_kinds")),
             ("attribute_tags", tags),
             ("layers", Pick(row, "layers")),
-            ("example_files", files));
+            ("example_files", files),
+            ("effective_names", Pick(row, "effective_names")),
+            ("is_xref", Truthy(row["is_xref"]) ? true : null),
+            ("is_anonymous", Truthy(row["is_anonymous"]) ? true : null));
     }
 
     public static JsonObject CompactDrawing(JsonObject row) => DropEmpty(
@@ -1210,6 +1218,8 @@ public sealed partial class OntologyRestTools(OntologyRestClient ontology, ICadG
             throw new McpException("[INVALID_ARGUMENT] element_id must not be empty.");
         }
 
+        RejectDotId(element_id, nameof(element_id));
+
         Range(nameof(hops), hops, 1, 2);
         var data = await ontology.ElementContextAsync(element_id, hops, ct).ConfigureAwait(false);
         return Json(data is JsonObject obj ? obj : new JsonObject { ["context"] = data?.DeepClone() });
@@ -1257,7 +1267,24 @@ public sealed partial class OntologyRestTools(OntologyRestClient ontology, ICadG
         Range(nameof(limit), limit, 1, 200);
         Range(nameof(k), k, 1, 100);
         ontology.EnsureConfigured(); // no AutoCAD round trip when the service is not configured
-        var live = await OntologyCad.OpenDrawingAsync(gateway, ct).ConfigureAwait(false);
-        return Json(await OntologyRest.AutoContextAsync(ontology, task, drawing, limit, k, project_id, live?.Drawing, ct).ConfigureAwait(false));
+        OntologyLiveDrawing? live;
+        string? drawingError = null;
+        try
+        {
+            live = await OntologyCad.OpenDrawingAsync(gateway, ct).ConfigureAwait(false);
+        }
+        catch (CadException e) when (e.Code == ErrorCodes.DocumentChanged)
+        {
+            live = null; // bound to another drawing than the active one: tag nothing as in the open drawing
+            drawingError = e.Message;
+        }
+
+        var bundle = await OntologyRest.AutoContextAsync(ontology, task, drawing, limit, k, project_id, live?.Drawing, ct).ConfigureAwait(false);
+        if (drawingError is not null)
+        {
+            bundle["open_drawing_error"] = drawingError;
+        }
+
+        return Json(bundle);
     }
 }

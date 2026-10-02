@@ -6,7 +6,7 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 | 구성 | 위치 | 용도 |
 | --- | --- | --- |
 | **power-cad-server + AutoCAD 2027 플러그인 (C#/.NET 10, 주력)** | [`dotnet/`](dotnet) | 실도면 수정. AutoCAD 내부에서 트랜잭션으로 실행하고, 수정 직전 대상 확인·수정 직후 자동 검증·실패 시 롤백 |
-| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회·도면 대조·블록 대조(9개 도구) |
+| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회·도면 대조·블록 대조·인벤토리 대조(10개 도구) |
 | best-cad-mcp (외부, 선택) | `uvx --from best-cad-mcp cad-mcp` | 도면 의미·객체 관계 분석 — 별도 MCP 서버로 함께 연결 |
 
 - 설계 문서: [프레임워크](docs/framework/AutoCAD2027_Framework.md) · [운영 지침(ASTRA)](docs/framework/ASTRA_CAD_Operating_Playbook.md) ·
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register_codex.ps1
 | 블록 | `list_blocks`, `create_block`, `insert_block` |
 | 조회/편집 | `list_entities`, `get_entity`, `delete_entities`, `move_entities`, `copy_entities`, `rotate_entities`, `scale_entities`, `mirror_entities`, `offset_entity`, `set_entity_properties` |
 | 화면/기타 | `zoom_extents`, `zoom_window`, `run_command` |
-| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate`, `ontology_block_candidates` |
+| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate`, `ontology_block_candidates`, `ontology_census_check` |
 
 규칙:
 - 좌표는 `[x, y]` 또는 `[x, y, z]`(도면 단위), 각도는 **도(degree)**, +X 기준 반시계 방향입니다.
@@ -223,6 +223,7 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 | `ontology_auto_context` | 위 조합 | 작업 문장 하나로 필요한 자료 묶음을 한 번에 반환 (`project_id`, 검색 결과 수 `k` 지정 가능) |
 | `ontology_locate` | `GET /v1/elements/{id}/context` + 열린 도면 | Ontology 객체 id → 현재 열린 도면의 실제 handle 확인(읽기 전용) |
 | `ontology_block_candidates` (Python) | `GET /v1/blocks` + `list_blocks` | Ontology 블록 중 열린 도면에 정의가 있어 `insert_block`에 바로 쓸 수 있는 것 / 다른 파일에만 있는 것 구분(읽기 전용) |
+| `ontology_census_check` (Python) | `GET /v1/drawings` + `GET /v1/elements?document_id=` + `drawing_census` | 도면 파일의 census와 Ontology가 가진 같은 파일의 행 대조: 수집 여부, 핸들 차이, 레이어별 객체 수, 클래스별 수(ZIUM 레이어 포함). 맞대어 볼 수 없는 것은 `not_comparable`(읽기 전용, 파일을 쓰지 않음) |
 
 `ontology_auto_context(task, drawing?, project_id?, k?)`는 작업 문장(한국어/영어)에서 키워드로 대상을 추론합니다.
 `project_id`를 주면 객체·도면·블록·검색 호출 모두 그 프로젝트로 한정합니다.
@@ -247,11 +248,14 @@ Ontology 객체에는 `handle`, `document_id`, `source_file`이 있지만 **hand
 다른 도면의 handle을 그대로 `move_entities`에 넘기면 엉뚱한 객체가 바뀔 수 있으므로, 편집 전에 `ontology_locate(element_ids)`로 확인합니다.
 
 - 객체마다 `/v1/elements/{id}/context`로 행을 받아 `source_file`과 열린 도면(`get_drawing_info`의 name/path)을 비교합니다.
-  파일 이름만, 대소문자 무시, `.dwg`/`.dxf` 확장자 차이는 같은 도면으로 봅니다(`A-201.dwg` = `a-201.DXF`).
-- 같은 도면이면 `get_entity(handle)`로 실제 존재를 확인하고, 엔티티 종류·레이어·블록 이름이 객체 클래스에 맞는지 봅니다
+  양쪽 모두 폴더가 있으면 **전체 경로**(구분자 `\`=`/`, 겹친 `/` 정리, 대소문자 무시, `.dwg`/`.dxf`/`.dwt`/`.dws` 확장자 무시)를 비교하고,
+  한쪽이 파일 이름뿐이면 파일 이름만 비교합니다(`A-201.dwg` = `a-201.DXF`). 이름이 같아도 열린 도면이 **저장되지 않았거나**(경로 없음)
+  기본 이름(`Drawing1` 등)이면 같은 파일이라고 증명할 수 없으므로 `other_drawing`("open drawing is unsaved/default-named; cannot prove it is the source file")입니다.
+- 같은 도면이면 **모델 공간에서만** handle을 찾고(레이어 레코드·블록 정의 안·종이 공간 객체는 "없음"), 엔티티 종류·레이어·블록 이름이 객체 클래스에 맞는지 봅니다
   (예: 블록 `DOOR_SINGLE`인 문인데 LINE이면 불일치, 문인데 DIMENSION/TEXT면 불일치, 실(Space)은 TEXT 허용).
-- 결과 `status`: `matched`(편집 가능) · `mismatch`(handle은 있으나 대상이 달라 보임, `reasons`) · `handle_missing`(같은 도면에 없음, 다른 배치 탭 등)
-  · `other_drawing`(다른 파일이거나 열린 도면이 없음, handle을 조회조차 하지 않음) · `not_found`(Ontology에 없는 id).
+  `matched`에는 긍정 근거가 하나 이상 필요합니다: 알려진 클래스(문·창·벽·기둥·실·주석 등), 같은 레이어, 또는 같은 블록 이름(익명 `*U…` 참조 포함).
+- 결과 `status`: `matched`(편집 가능) · `unverified`(반대 근거도 긍정 근거도 없음 — 편집에 쓰지 않음) · `mismatch`(handle은 있으나 대상이 달라 보임, `reasons`) · `handle_missing`(같은 도면 모델 공간에 없음, 다른 배치 탭 등)
+  · `other_drawing`(다른 파일, 열린 도면 없음, 미저장/기본 이름 — handle을 조회조차 하지 않음) · `not_found`(Ontology에 없는 id, 또는 API가 다른 객체를 돌려줌 — `error: "API returned element …"`). `.`/`..` 같은 id는 오류로 거부합니다.
 - 각 결과에 `element_id`, `handle`, `source_file`, `open_drawing`, `entity`(종류·레이어·블록 이름·위치 요약)가 있고, `matched_handles`에 편집 가능한 handle만 모읍니다.
 - 도면을 절대 수정하지 않습니다.
 
@@ -279,7 +283,21 @@ Ontology 블록 카탈로그(`/v1/blocks`)와 열린 도면의 블록 정의(`li
   이름 질의에 맞지만 Ontology에 없는 도면 내 블록도 `note`와 함께 여기에 나옵니다.
 - `other_files`: 다른 도면에만 있음 → `example_files`에 있는 파일을 열어 작업하거나, 사용자가 블록을 직접 가져와야 합니다.
   Ontology가 이 도면에서 읽었다고 하는데 지금 정의가 없으면(purge/이름 변경) `note`로 알려 줍니다.
-- `not_insertable`: XREF, effective name 없는 익명 블록. 블록 테이블을 읽지 못하면 `unverified`에 두고 `warnings`에 이유를 남깁니다.
+- `not_insertable`: XREF(Ontology 쪽이든 열린 도면의 같은 이름 정의든), effective name 없는 익명 블록. 블록 테이블을 읽지 못하면 `unverified`에 두고 `warnings`에 이유를 남깁니다.
+
+### 도면 인벤토리 ↔ Ontology (`ontology_census_check`, Python 서버)
+
+`drawing_census`(로컬, 파일의 모든 객체)와 Ontology(수집된 건물 데이터)는 따로 만든 인벤토리입니다.
+`ontology_census_check(path, census_json?, project_id?, standard?)`는 같은 파일을 두고 둘을 대조합니다. 파일도 도면도 바꾸지 않습니다.
+
+- 문서 찾기: `/v1/drawings`의 `name`/`source_key`를 파일명으로 비교(대소문자 무시, `.dwg` = `.dxf`). 여러 개면 `project_id` → 높은 리비전 → 최근 수집 순으로 고르고 나머지는 `other_documents`.
+- `handles`: handle이 있는 Ontology 요소를 census의 `entity_index`에서 찾습니다. `only_in_ontology`는 수집 후 파일이 바뀐 것(또는 다른 리비전),
+  `only_in_census_*`는 Ontology가 요소로 만들지 않은 레이아웃 객체(치수·일반 선 등 — 결함 아님). 블록 정의 내부와 ATTRIB은 제외합니다.
+- `layers`: Ontology `Layer` 행의 `entity_count`/`block_entity_count`와 census의 레이아웃/블록 정의 객체 수 → `equal`/`differs`/`not_in_ontology`.
+- `classes`: 클래스별 Ontology 요소 수 옆에 같은 레이어의 census 객체 수와 ZIUM 표준 레이어(문 `DOOR`, 창 `WIN`·`WINBAR`, 벽 `WAL1`~`3`, 계단 `STAIR`, 실 `실명`)의 객체 수.
+  객체 수 ≠ 요소 수이므로 일치 판정은 하지 않습니다. 정확한 대조는 `handles`입니다.
+- `not_comparable`: handle 없는 Ontology 행(문서·레이어·뷰), 블록 내부, 기둥·구조벽이 섞인 ZIUM `COL`, 표준 없이 만든 census 등 — 이유와 함께.
+- 파일이 수집 시각 이후 수정됐거나 `census_json`이 다른 파일의 것이면 `warnings`에 남깁니다. `entity_index`가 없는 예전 census.json은 `drawing_census`를 다시 돌리세요.
 
 ### COM 편집 플랜에서 Ontology id 쓰기 (`scripts/com_plan_runner.py`)
 
@@ -295,7 +313,8 @@ handle 대신(또는 함께) Ontology 객체 id로 대상을 지정할 수 있�
 - 그 밖의 키는 플랜에 이미 적힌 handle이며, 객체가 정확히 그 handle로 확인되어야 합니다.
 - 검증 전에 Ontology REST API(`--ontology-url`, 없으면 `POWERCAD_ONTOLOGY_URL`, 기본 `http://127.0.0.1:58000`)에서 객체를 받아
   `ontology_locate`와 같은 규칙(원본 파일 = 열린 도면, handle 존재, 엔티티 타당성)으로 대조합니다. 하나라도 `matched`가 아니거나
-  쓰이지 않는 키·같은 handle로 겹치는 대상이 있으면 `{"ok": false, "stage": "resolve"}`로 플랜 전체를 거부합니다.
+  쓰이지 않는 키·같은 handle로 겹치는 대상이 있으면 `{"ok": false, "stage": "resolve"}`로 플랜 전체를 거부합니다(`unverified`도 거부, 해석 중 예외도 traceback 없이 `stage:"resolve"`).
+- `elements`가 없어도 한 op 안에서 같은 handle을 두 번 적으면(`aa4`와 `AA4`처럼 대소문자만 달라도) 검증 단계에서 거부합니다.
 - 그 뒤 기존 예상 형상 검사가 확인된 handle에 그대로 실행되고, 결과에 `resolved`(키 → id → handle)가 붙습니다.
   `elements`가 없는 플랜은 Ontology에 접속하지 않습니다.
 

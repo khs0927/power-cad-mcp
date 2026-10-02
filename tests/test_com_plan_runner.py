@@ -20,18 +20,29 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
+MODEL_SPACE_ID = 1001
+
+
 class Obj:
     def __init__(self, handle: str, object_name: str, layer: str, **kw: Any):
         self.Handle, self.ObjectName, self.Layer = handle, object_name, layer
+        self.OwnerID = MODEL_SPACE_ID
         for k, v in kw.items():
             setattr(self, k, v)
+
+
+class LayerRecord:
+    """A non-entity object HandleToObject also returns: no OwnerID/Layer as an entity has them."""
+
+    Handle, ObjectName, Name = "10", "AcDbLayerTableRecord", "0"
 
 
 class Doc:
     Name = "A-201.dwg"
     FullName = r"C:\proj\A-201.dwg"
+    ModelSpace = type("MS", (), {"ObjectID": MODEL_SPACE_ID})()
 
-    def __init__(self, *objs: Obj):
+    def __init__(self, *objs: Any):
         self.objs = {o.Handle: o for o in objs}
 
     def HandleToObject(self, handle: str) -> Obj:  # noqa: N802 - COM name
@@ -65,6 +76,8 @@ DOC = Doc(
     Obj("AA4", "AcDbPolyline", "A-WALL", Coordinates=[c for p in WALL_PTS for c in p]),
     Obj("2F3", "AcDbBlockReference", "A-DOOR", Name="*U12", EffectiveName="DOOR_SINGLE"),
     Obj("3B0", "AcDbText", "A-ANNO", TextString="SD-01"),
+    Obj("B10", "AcDbLine", "A-DOOR", OwnerID=2002),  # inside a block definition
+    LayerRecord(),
 )
 ONTO = Client(
     {
@@ -73,6 +86,9 @@ ONTO = Client(
         "obs_label": _row("obs_label", "Door", "3B0", "A-ANNO"),  # a TEXT is not the door
         "obs_other": _row("obs_other", "Wall", "AA4", "A-WALL", source="A-501.dwg"),
         "obs_gone": _row("obs_gone", "Wall", "FFF", "A-WALL"),
+        "obs_inblock": _row("obs_inblock", "Door", "B10", "A-DOOR"),
+        "obs_layer": _row("obs_layer", "Door", "10", "0"),
+        "obs_alias": _row("obs_wall", "Wall", "AA4", "A-WALL"),  # the API answers with another id
     }
 )
 
@@ -136,6 +152,8 @@ def test_handle_keys_must_agree_with_the_element():
         ("obs_other", "other_drawing", ""),
         ("obs_gone", "handle_missing", "no model-space entity"),
         ("obs_missing", "not_found", "Object not found"),
+        ("obs_inblock", "handle_missing", "no model-space entity"),
+        ("obs_layer", "handle_missing", "no model-space entity"),
     ],
 )
 def test_unmatched_elements_refuse_the_plan(element_id, status, detail):
@@ -163,6 +181,39 @@ def test_structural_errors():
     assert any(e.startswith("[c] delete: elements must be an object") for e in errors)
 
 
+def test_api_returning_another_element_is_named():
+    plan = {
+        "ops": [
+            {"id": "t", "op": "delete", "elements": {"@x": "obs_alias"}, "expect": {"@x": "AcDbPolyline"}}
+        ]
+    }
+    assert _resolve(plan)[2] == ["[t] delete: element obs_alias: API returned element obs_wall"]
+
+
+def test_duplicate_handles_are_case_insensitive_with_or_without_elements():
+    plain = {"ops": [{"id": "p", "op": "delete", "expect": {"aa4": "AcDbPolyline", "AA4": "AcDbPolyline"}},
+                     {"id": "q", "op": "scale", "handles": ["2f3", "2F3"], "base": [0, 0], "factor": 2,
+                      "expect": {"2F3": [0, 0]}}]}  # fmt: skip
+    errors = runner.validate(DOC, plain)
+    assert errors == [
+        "[p] delete: duplicate target handles ['AA4'] (handles are case-insensitive)",
+        "[q] scale: duplicate target handles ['2F3'] (handles are case-insensitive)",
+    ]
+    # One target named in `handles` and in `expect` (scale) is not a duplicate.
+    ok = {
+        "id": "s",
+        "op": "scale",
+        "handles": ["2f3"],
+        "base": [0, 0],
+        "factor": 2,
+        "expect": {"2F3": [0, 0]},
+    }
+    assert runner._duplicate_handles(ok) == []
+    mixed = {"ops": [{"id": "m", "op": "delete", "elements": {"@w": "obs_wall"},
+                      "expect": {"@w": "AcDbPolyline", "aa4": "AcDbPolyline"}}]}  # fmt: skip
+    assert "[m] delete: two targets resolve to the same handle" in _resolve(mixed)[2]
+
+
 def test_service_down_raises_for_the_caller_to_report():
     plan = {
         "ops": [{"id": "a", "op": "delete", "elements": {"@x": "obs_wall"}, "expect": {"@x": "AcDbPolyline"}}]
@@ -175,4 +226,6 @@ def test_com_lookup_and_drawing_info():
     lookup = runner.com_lookup(DOC)
     assert lookup("2f3") == {"handle": "2F3", "type": "INSERT", "layer": "A-DOOR", "name": "DOOR_SINGLE"}
     assert lookup("AA4")["type"] == "LWPOLYLINE" and lookup("nope") is None
+    assert lookup("B10") is None  # entity of a block definition
+    assert lookup("10") is None  # a layer record: no traceback, just "not there"
     assert runner.open_drawing_info(DOC) == {"name": "A-201.dwg", "path": r"C:\proj\A-201.dwg"}

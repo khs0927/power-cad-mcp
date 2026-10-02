@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -17,7 +18,12 @@ public sealed record OntologyLiveDrawing(JsonObject Drawing, string? DocumentId)
 /// <summary>Reads the open drawing and single entities through the gateway; any CAD failure just means "unknown".</summary>
 public static class OntologyCad
 {
-    /// <summary>The open drawing, or null when none is reachable (no gateway, AutoCAD not running, no document).</summary>
+    /// <summary>
+    /// The open drawing, or null when none is reachable (no gateway, AutoCAD not running, no document). When the gateway is
+    /// bound to a document (cad_bind_document), the bound document is described; if the active drawing is another one this
+    /// throws a <see cref="CadException"/> with <see cref="ErrorCodes.DocumentChanged"/> ("bound to A, active drawing is B")
+    /// instead of describing the active drawing, whose handles the bound edit tools would refuse anyway.
+    /// </summary>
     public static async Task<OntologyLiveDrawing?> OpenDrawingAsync(ICadGateway? gateway, CancellationToken ct)
     {
         if (gateway is null)
@@ -39,7 +45,23 @@ public static class OntologyCad
             return null; // any backend failure just means "no open drawing"
         }
 
-        return Describe(info);
+        var live = Describe(info);
+        if (gateway is DocumentBoundGateway { BoundDocumentId: { } bound } boundGateway && live?.DocumentId != bound)
+        {
+            var boundLive = Describe(boundGateway.BoundDocument);
+            throw new CadException(
+                ErrorCodes.DocumentChanged,
+                $"bound to {Label(boundLive, bound)}, active drawing is {Label(live, null)}",
+                "Activate the bound drawing, or call cad_bind_document for the active one, then locate again.");
+        }
+
+        return live;
+    }
+
+    private static string Label(OntologyLiveDrawing? live, string? fallback)
+    {
+        var text = live is null ? null : (live.Drawing["path"] ?? live.Drawing["name"])?.GetValue<string>();
+        return text ?? fallback ?? "(no drawing)";
     }
 
     /// <summary>document_identity / status answer -> <c>{name, path?}</c>. The plugin reports the full path, the simulator a bare name.</summary>
@@ -74,7 +96,8 @@ public static class OntologyCad
 
     /// <summary>
     /// Read one entity by handle; null when it does not exist (or cannot be read). The read is pinned to the document that
-    /// was open when the drawing was described, so a drawing switch in between reads nothing instead of an unrelated entity.
+    /// was open when the drawing was described, so a drawing switch in between never reads an unrelated entity: it throws
+    /// the backend's DOCUMENT_CHANGED <see cref="CadException"/> instead of reporting the handle as missing.
     /// </summary>
     public static Func<string, Task<JsonObject?>> Lookup(ICadGateway? gateway, OntologyLiveDrawing? live, CancellationToken ct) => async handle =>
     {
@@ -97,6 +120,10 @@ public static class OntologyCad
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (CadException e) when (e.Code == ErrorCodes.DocumentChanged)
+        {
+            throw; // the drawing switched (or differs from the binding): an error, not a missing handle
         }
         catch (Exception)
         {
@@ -177,16 +204,94 @@ public static partial class OntologyRest
 
     private static JsonObject DrawingLabel(JsonObject openDrawing) => DropEmpty(("name", openDrawing["name"]), ("path", openDrawing["path"]));
 
-    /// <summary>True when <paramref name="sourceFile"/> is the open drawing, false when it is another one, null when unknown.</summary>
-    public static bool? InDrawing(JsonNode? sourceFile, JsonObject? openDrawing)
+    /// <summary>
+    /// 'C:\Proj\A-201.DWG' -> 'c:/proj/a-201': folder + stem, case-folded, separators normalised, without a CAD extension;
+    /// null when the name has no folder (then only the basename <see cref="DrawingKey(string?)"/> can be compared).
+    /// </summary>
+    public static string? DrawingPathKey(string? name)
     {
-        var key = DrawingKey(sourceFile);
-        var keys = DrawingKeys(openDrawing);
-        return key is null || keys.Count == 0 ? null : keys.Contains(key);
+        var text = (name ?? "").Trim().Trim('"').Replace('\\', '/');
+        var cut = text.LastIndexOf('/');
+        var stem = DrawingKey(text);
+        if (cut < 0 || stem is null)
+        {
+            return null;
+        }
+
+        var folder = string.Join('/', text[..cut].Split('/').Select(part => part.Trim())
+            .Where((part, i) => part.Length > 0 || i == 0)).TrimEnd('/').ToLowerInvariant();
+        return folder.Length == 0 && !text.StartsWith('/') ? null : folder + "/" + stem;
     }
+
+    /// <summary>AutoCAD's names for a drawing that was never saved (Drawing1.dwg ...): such a name proves nothing.</summary>
+    [GeneratedRegex(@"^drawing\d*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DefaultDrawingName();
+
+    public static bool IsDefaultDrawingName(string? key) => key is not null && DefaultDrawingName().IsMatch(key);
+
+    internal const string UnprovableNote = "open drawing is unsaved/default-named; cannot prove it is the source file";
+
+    /// <summary>
+    /// Whether <paramref name="sourceFile"/> is the open drawing: true/false, or null when unknown (no drawing open, no
+    /// source_file), plus a note when the answer is false only because it cannot be proven. When both sides carry a folder
+    /// the whole normalised path must agree; the basename is compared only when one side has no folder. A default name
+    /// (Drawing1) or an open drawing without a saved path never counts as the same drawing.
+    /// </summary>
+    public static (bool? Same, string? Note) DrawingMatch(JsonNode? sourceFile, JsonObject? openDrawing)
+    {
+        var keys = DrawingKeys(openDrawing);
+        if (keys.Count == 0)
+        {
+            return (null, "no drawing is open");
+        }
+
+        var source = StrOrEmpty(sourceFile);
+        var key = DrawingKey(source);
+        if (key is null)
+        {
+            return (null, "the element has no source_file");
+        }
+
+        var openPath = DrawingPathKey(StrOrEmpty(openDrawing!["path"]));
+        var sourcePath = DrawingPathKey(source);
+        var same = sourcePath is not null && openPath is not null ? sourcePath == openPath : keys.Contains(key);
+        if (!same)
+        {
+            return (false, null);
+        }
+
+        return openPath is null || IsDefaultDrawingName(key) ? (false, UnprovableNote) : (true, null);
+    }
+
+    /// <summary>True when <paramref name="sourceFile"/> is provably the open drawing, false when it is another one (or cannot be proven), null when unknown.</summary>
+    public static bool? InDrawing(JsonNode? sourceFile, JsonObject? openDrawing) => DrawingMatch(sourceFile, openDrawing).Same;
 
     /// <inheritdoc cref="InDrawing(JsonNode?, JsonObject?)"/>
     public static bool? InDrawing(string? sourceFile, JsonObject? openDrawing) => InDrawing(sourceFile is null ? null : JsonValue.Create(sourceFile), openDrawing);
+
+    /// <summary>
+    /// True when something positively ties the live entity to the element: a class whose plausible entity types are known,
+    /// the same layer, or the element's block inserted by the entity. Without one, "no reason against it" proves nothing.
+    /// </summary>
+    public static bool HasPositiveSignal(JsonObject element, JsonObject entity)
+    {
+        var cls = StrOrEmpty(element["class"]);
+        if (PhysicalClasses.Contains(cls) || TextClasses.Contains(cls))
+        {
+            return true;
+        }
+
+        var layer = StrOrEmpty(element["layer"]);
+        if (layer.Length > 0 && layer.Equals(StrOrEmpty(entity["layer"]), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var block = StrOrEmpty(element["block_name"]);
+        var name = StrOrEmpty(entity["name"]);
+        return block.Length > 0 && StrOrEmpty(entity["type"]).Equals("INSERT", StringComparison.OrdinalIgnoreCase)
+            && (name.StartsWith('*') || name.Equals(block, StringComparison.OrdinalIgnoreCase));
+    }
 
     public static JsonObject EntitySummary(JsonObject entity)
     {
@@ -250,8 +355,10 @@ public static partial class OntologyRest
     /// <summary>
     /// Decide whether an Ontology element can be acted on in the open drawing. Never edits anything. <paramref name="lookup"/>
     /// returns the live entity or null when the handle does not exist. Status: matched (same drawing, handle exists, entity
-    /// plausible), mismatch (handle exists but the entity does not look like the element), handle_missing (same drawing, no
-    /// such entity / no handle recorded), other_drawing (another file, or the open drawing is unknown) or not_found.
+    /// plausible and positively tied to it by class, layer or block), unverified (handle exists, nothing against the entity
+    /// but nothing ties it to the element either), mismatch (handle exists but the entity does not look like the element),
+    /// handle_missing (same drawing, no such entity / no handle recorded), other_drawing (another file, the open drawing is
+    /// unknown, or it is unsaved/default-named so it cannot be proven to be the source file) or not_found.
     /// </summary>
     public static async Task<JsonObject> MatchElementAsync(
         JsonObject? element,
@@ -278,12 +385,10 @@ public static partial class OntologyRest
         };
         JsonObject Result(params (string Key, JsonNode? Value)[] more) => DropEmpty([.. fields, .. more]);
 
-        var same = InDrawing(element["source_file"], openDrawing);
+        var (same, drawingNote) = DrawingMatch(element["source_file"], openDrawing);
         if (same != true)
         {
-            return same is null
-                ? Result(("status", "other_drawing"), ("note", DrawingKeys(openDrawing).Count == 0 ? "no drawing is open" : "the element has no source_file"))
-                : Result(("status", "other_drawing"));
+            return Result(("status", "other_drawing"), ("note", drawingNote));
         }
 
         if (handle.Length == 0)
@@ -306,9 +411,14 @@ public static partial class OntologyRest
 
         fields.Add(("entity", EntitySummary(entity)));
         var reasons = Plausibility(element, entity);
-        return reasons.Count > 0
-            ? Result(("status", "mismatch"), ("reasons", new JsonArray(reasons.Select(r => (JsonNode)r).ToArray())))
-            : Result(("status", "matched"));
+        if (reasons.Count > 0)
+        {
+            return Result(("status", "mismatch"), ("reasons", new JsonArray(reasons.Select(r => (JsonNode)r).ToArray())));
+        }
+
+        return HasPositiveSignal(element, entity)
+            ? Result(("status", "matched"))
+            : Result(("status", "unverified"), ("note", "nothing ties the entity to the element (no known class, matching layer or block name)"));
     }
 
     /// <summary>The element row inside an /v1/elements/{id}/context answer (or a bare element row).</summary>
@@ -414,7 +524,7 @@ public static partial class OntologyRest
                     ("type", entity["type"]),
                     ("layer", entity["layer"])));
             }
-            else if (status is "mismatch" or "handle_missing" && other.Count < limit)
+            else if (status is "mismatch" or "handle_missing" or "unverified" && other.Count < limit)
             {
                 other.Add($"{(result["element_id"] is { } id ? Str(id) : "None")}: {status}");
             }
@@ -439,10 +549,12 @@ public sealed partial class OntologyRestTools
 {
     [McpServerTool(Name = "ontology_locate", ReadOnly = true, Idempotent = true, Destructive = false, OpenWorld = true)]
     [Description("Map Ontology elements to live CAD handles in the open drawing, safely and read-only. Handles are only unique per "
-        + "drawing, so for each id this checks that the element's source file is the open drawing (basename, case-insensitive, "
-        + ".dwg = .dxf), that the handle exists there and that the entity is plausible for the element (type, layer, block). "
-        + "Status per id: matched, mismatch, handle_missing, other_drawing or not_found. Only `matched` handles are safe to pass to "
-        + "cad_get / cad_move / cad_delete / cad_set_properties (with the entity's fingerprint). Never modifies the drawing.")]
+        + "drawing, so for each id this checks that the element's source file is the open drawing (full path when both sides have a "
+        + "folder, otherwise the basename; case-insensitive, .dwg = .dxf; an unsaved or Drawing1-style drawing never counts), that the "
+        + "handle exists there and that the entity is plausible for the element and tied to it by class, layer or block. When this "
+        + "client is bound to a drawing (cad_bind_document) the bound drawing is checked, and a different active drawing is an error. "
+        + "Status per id: matched, unverified, mismatch, handle_missing, other_drawing or not_found. Only `matched` handles are safe "
+        + "to pass to cad_get / cad_move / cad_delete / cad_set_properties (with the entity's fingerprint). Never modifies the drawing.")]
     public async Task<string> Locate(
         [Description("Ontology element ids (id field), 1-200")] string[] element_ids,
         CancellationToken ct = default)
@@ -452,9 +564,32 @@ public sealed partial class OntologyRestTools
             throw new McpException("[INVALID_ARGUMENT] element_ids must hold between 1 and 200 ids.");
         }
 
+        foreach (var id in element_ids)
+        {
+            RejectDotId(id, "element_ids");
+        }
+
         ontology.EnsureConfigured();
-        var live = await OntologyCad.OpenDrawingAsync(gateway, ct).ConfigureAwait(false);
-        var report = await OntologyRest.LocateAsync(ontology, element_ids, live?.Drawing, OntologyCad.Lookup(gateway, live, ct), ct).ConfigureAwait(false);
-        return Json(report);
+        try
+        {
+            var live = await OntologyCad.OpenDrawingAsync(gateway, ct).ConfigureAwait(false);
+            var report = await OntologyRest.LocateAsync(ontology, element_ids, live?.Drawing, OntologyCad.Lookup(gateway, live, ct), ct).ConfigureAwait(false);
+            return Json(report);
+        }
+        catch (CadException e) when (e.Code == ErrorCodes.DocumentChanged)
+        {
+            // The drawing switched (or is not the bound one): no handle can be trusted, so nothing is reported per id.
+            return Json(new JsonObject { ["error"] = e.Message, ["code"] = e.Code, ["hint"] = e.Hint, ["read_only"] = true });
+        }
+    }
+
+    /// <summary>'.' / '..' would be collapsed by URI normalisation into another REST route, so they are never element ids.</summary>
+    private static void RejectDotId(string? id, string name)
+    {
+        var text = (id ?? "").Trim();
+        if (text.Length > 0 && text.All(c => c == '.'))
+        {
+            throw new McpException($"[INVALID_ARGUMENT] {name} must not be '{text}' (dot-only ids are not element ids).");
+        }
     }
 }

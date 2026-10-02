@@ -47,6 +47,23 @@ COM 폴백을 쓸 때의 작업 순서: ① 계획 JSON 작성 → ② `python s
   모든 op는 한 UNDO 그룹이므로 AutoCAD에서 `UNDO` 1회로 전체 되돌림.
 - **도면은 저장되지 않는다.** 적용 후 사용자가 저장하기 전에 AutoCAD가 꺼지면 수정이 사라진다 → 적용 직후 사용자에게 저장 여부를 묻고, 동의하면 `cad_save {mode:"save", user_confirmed:true}`(0.4.0), 아니면 `cad_save {path:"...\\백업.dwg"}`로 사본만 남긴다.
 
+## 0-1. Ontology로 대상 찾기 (도면이 Ontology에 수집돼 있을 때)
+
+사용자가 문·창·벽을 하나하나 지정하지 않아도 Ontology(읽기 전용, `POWERCAD_ONTOLOGY_URL`)에서 대상을 끌어온다. 결과는 **힌트**다 — 수정 전에 반드시 열린 도면에서 확인한다.
+
+1. `ontology_auto_context {task:"1층 평면도 문·창 검토"}` → 클래스별 요소(`elements`), 관련 시트, 블록, 검색 결과. 도면이 열려 있으면 각 요소에 `in_open_drawing`.
+2. `ontology_locate {element_ids:[...]}` → 요소마다 `matched` / `unverified` / `mismatch` / `handle_missing` / `other_drawing` / `not_found`.
+   **`matched`만** 핸들로 쓴다(저장된 같은 파일·모델 공간에 핸들 존재·객체 모양 일치). 미저장 `Drawing1`에서는 항상 `other_drawing`이므로 도면을 먼저 저장하거나 원본을 연다. 나머지는 보고서에 "보류(근거: 상태)"로 적는다.
+3. COM 폴백 계획에서는 핸들 대신 요소 id를 쓸 수 있다 — op에 `"elements": {"@door1": "obs_..."}`를 넣고 `expect`·`handles`·`handle`에 `@door1`을 쓴다.
+   `python scripts/com_plan_runner.py PLAN.json --ontology-url http://127.0.0.1:58000` 이 실행 전에 모든 id를 `ontology_locate`와 같은 규칙으로 확인하고, 하나라도 `matched`가 아니면 계획 전체를 거부한다. 핸들로 바뀐 뒤에는 기존 `expect` 기하 검증이 그대로 돈다.
+   ```json
+   {"op": "delete", "id": "D-01", "elements": {"@d": "obs_..."}, "expect": {"@d": "AcDbBlockReference"}}
+   ```
+4. 블록을 새로 놓을 때: `ontology_block_candidates {name_or_task:"문 블록 배치"}` → `insertable`의 `insert_name`을 `insert_block`(Python) / `cad_create {type:"insert", name}`(C#)에 넘긴다.
+   `other_files`(다른 도면에만 있는 블록)는 가져오지 않는다 — 필요하면 사용자 확인 후 `cad_import_block`.
+5. 도면 파일 전체가 Ontology와 같은 상태인지 의심되면 `ontology_census_check {path}`(→ [census 플레이북 1-1절](DRAWING_CENSUS_PLAYBOOK.md#1-1-ontology와-대조-선택-읽기-전용)).
+   `handles.only_in_ontology`가 있으면 수집 후 도면이 바뀐 것이므로 Ontology 핸들을 믿지 말고 `cad_query`로 다시 고른다.
+
 ## 1. 항목별 판정 규칙
 
 각 규칙은 "보고된 증상 → 확인할 데이터 → 판정"이다.

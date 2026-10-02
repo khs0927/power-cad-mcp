@@ -37,6 +37,8 @@ Power CAD drives AutoCAD (live, over COM on Windows) or a headless DXF drawing.
   results with status "matched" (same source file as the open drawing, handle exists, entity plausible).
 - To place a block the Ontology knows, call ontology_block_candidates(name_or_task) and pass an
   `insertable` entry's insert_name to insert_block; blocks only in other files are not imported.
+- To check a drawing file against the Ontology (ingested? same handles? same layer counts?), call
+  ontology_census_check(path) after drawing_census; it marks what cannot be compared as not_comparable.
 """
 
 PointArg = Annotated[list[float], Field(min_length=2, max_length=3, description="[x, y] or [x, y, z]")]
@@ -99,9 +101,9 @@ class PowerCad:
         return info if isinstance(info, dict) and (info.get("name") or info.get("path")) else None
 
     def lookup(self, handle: str) -> dict[str, Any] | None:
-        """Read one entity by handle; None when it does not exist. Read-only."""
+        """Read one model-space entity by handle; None when there is none. Read-only."""
         try:
-            return self.backend.get_entity(handle)
+            return self.backend.model_space_entity(handle)
         except Exception:  # noqa: BLE001 - a missing/invalid handle is a result, not an error
             return None
 
@@ -997,9 +999,11 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         """Map Ontology elements to live CAD handles in the open drawing, safely and read-only.
 
         Handles are only unique per drawing, so for each id this checks that the element's source file is
-        the open drawing (basename, case-insensitive, .dwg = .dxf), that the handle exists there and that
+        the open drawing (case-insensitive, .dwg = .dxf), that the handle exists in model space and that
         the entity is plausible for the element (type, layer, block). Status per id: matched,
-        mismatch, handle_missing, other_drawing or not_found. Only `matched` handles are safe to pass to
+        unverified, mismatch, handle_missing, other_drawing or not_found. An unsaved or default-named
+        (Drawing1) open drawing never matches; full paths are compared when both sides have a folder.
+        Only `matched` handles are safe to pass to
         get_entity / move_entities / delete_entities / set_entity_properties. Never modifies the drawing."""
         return cad.locate(element_ids)
 
@@ -1023,5 +1027,49 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         `other_files` exist only in other drawings (see example_files) and are not imported;
         `not_insertable` are xrefs / anonymous blocks. Never modifies the drawing."""
         return cad.block_candidates(name_or_task, project_id=project_id, limit=limit)
+
+    @tool(ONTOLOGY)
+    def ontology_census_check(
+        path: Annotated[
+            str, Field(description="Drawing file (.dxf; .dwg needs ODA File Converter) to look up")
+        ],
+        census_json: Annotated[
+            str | None,
+            Field(description="census.json from drawing_census; omit to take the census of `path` now"),
+        ] = None,
+        project_id: ProjectArg = None,
+        standard: Annotated[
+            str | None,
+            Field(description="ZIUM floor_plan_standard.json for the class/layer mapping (census of path)"),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=500, description="Max listed handles per section")] = 50,
+    ) -> dict[str, Any]:
+        """Compare a drawing's local census with what the Ontology holds for the same file, read-only.
+
+        Reports whether the file is ingested (matched by file name, .dwg = .dxf), handles in the Ontology
+        but missing from the file (changed since ingestion) and layout entities the Ontology made no
+        element of, per-layer entity counts (Ontology Layer rows vs census) and, per class, Ontology
+        element counts beside census entities on the same layers and on the ZIUM standard layers
+        (DOOR, WIN, WAL1-3 ...). Anything that does not line up is listed under `not_comparable`.
+        Writes no file and never changes the drawing."""
+        import json
+        from pathlib import Path
+
+        from .census import census, load
+        from .census_check import census_check
+
+        src = cad.path(path)
+        if census_json:
+            report = json.loads(Path(cad.path(census_json)).read_text(encoding="utf-8"))
+            if not isinstance(report, dict) or "completeness" not in report:
+                raise ValueError(f"{census_json} is not a census.json from drawing_census")
+            source = "census_json"
+        else:
+            std = json.loads(Path(cad.path(standard)).read_text(encoding="utf-8")) if standard else None
+            report = census(load(Path(src)), std)
+            source = "file"
+        return census_check(
+            cad.ontology, src, report, project_id=project_id, census_source=source, limit=limit
+        )
 
     return mcp

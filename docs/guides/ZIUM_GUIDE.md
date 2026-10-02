@@ -8,7 +8,7 @@
 3. A101·A102 입면도 (창·문 형태, 바닥 해치)
 4. 단면도 (종·횡단면, 계단 확대단면)
 5. 평면도 (벽·단열·외장, 창·문, 계단, 코어, 지시선)
-6. 블록 자산 (도구 사용법)
+6. Ontology 건물 데이터 · 블록 자산 (도구 사용법)
 7. 단열재 기준 (계획표·지시선)
 8. 해치 표준
 9. 평면도 블록 목록 · 자산으로 저장할 목록
@@ -935,6 +935,22 @@
 
 검증: `tests/test_zium_plan_builder.py` — 예제 사양이 2026-09-30 건축,구조1에 그린 시험 평면도(194개)를 재현한다(190개 동일, 4개는 문자 위치 3mm 이내 차이 — 빌더가 규칙값).
 한계: 도구가 bulge 폴리선을 만들지 못해 단열 물결은 호를 5등분한 폴리선, 지시선 치수 스타일은 현재 스타일을 따른다. 계단·코어·화장실·주차는 아직 사양에 없다(원본에서 실측해 추가할 것).
+
+---
+
+## Ontology 건물 데이터 (읽기 전용)
+
+수집된 도면의 문·창·벽·실·블록·시트를 Ontology에서 찾아 쓰는 도구. 모두 읽기 전용이고 결과는 힌트다 — 수정 전에 열린 도면에서 확인한다(`POWERCAD_ONTOLOGY_URL` 필요).
+
+| 언제 | 도구 | 이어서 |
+| --- | --- | --- |
+| 작업 시작: 대상 끌어오기 | `ontology_auto_context {task}` | 요소 id → `ontology_locate` |
+| 핸들로 수정하기 전 | `ontology_locate {element_ids}` | `matched`만 `cad_*`/편집 도구·`com_plan_runner.py`의 `elements`에 사용 |
+| 블록 배치 | `ontology_block_candidates {name_or_task}` | `insertable[].insert_name` → 삽입 |
+| 도면 인벤토리 대조 | `drawing_census` → `ontology_census_check {path}` | 차이·`not_comparable` 확인 ([census 플레이북 1-1절](../playbooks/DRAWING_CENSUS_PLAYBOOK.md)) |
+
+- ZIUM 표준 레이어와 Ontology 클래스는 일부만 맞대어 볼 수 있다: 문 `DOOR`, 창 `WIN`·`WINBAR`, 벽 `WAL1`~`WAL3`, 계단 `STAIR`, 실 `실명`. `COL`은 기둥과 구조벽(`S-WALL`)이 섞여 대조하지 않는다.
+- 자세한 순서: [평면도 검토·수정 플레이북 0-1절](../playbooks/HOUSE_PLAN_REVIEW_PLAYBOOK.md).
 
 ---
 
