@@ -246,25 +246,28 @@ Ontology 객체에는 `handle`, `document_id`, `source_file`이 있지만 **hand
 다른 도면의 handle을 그대로 `move_entities`에 넘기면 엉뚱한 객체가 바뀔 수 있으므로, 편집 전에 `ontology_locate(element_ids)`로 확인합니다.
 
 - 객체마다 `/v1/elements/{id}/context`로 행을 받아 `source_file`과 열린 도면(`get_drawing_info`의 name/path)을 비교합니다.
-  파일 이름만, 대소문자 무시, `.dwg`/`.dxf` 확장자 차이는 같은 도면으로 봅니다(`A-201.dwg` = `a-201.DXF`).
+  파일 이름·대소문자·CAD 확장자를 정규화해 후보를 찾습니다. 두 전체 경로가 있으면 서로 다른 경로는 제외합니다.
+  이름이 같거나 DWG/DXF 사본이라는 사실만으로 동일 원본·리비전·handle을 보장하지 않습니다.
 - 같은 도면이면 `get_entity(handle)`로 실제 존재를 확인하고, 엔티티 종류·레이어·블록 이름이 객체 클래스에 맞는지 봅니다
   (예: 블록 `DOOR_SINGLE`인 문인데 LINE이면 불일치, 문인데 DIMENSION/TEXT면 불일치, 실(Space)은 TEXT 허용).
-- 결과 `status`: `matched`(편집 가능) · `mismatch`(handle은 있으나 대상이 달라 보임, `reasons`) · `handle_missing`(같은 도면에 없음, 다른 배치 탭 등)
+- 결과 `status`: `matched`(이름·엔티티 상태가 맞는 검토 후보) · `mismatch`(handle은 있으나 대상이 달라 보임, `reasons`) · `handle_missing`(같은 도면에 없음, 다른 배치 탭 등)
   · `other_drawing`(다른 파일이거나 열린 도면이 없음, handle을 조회조차 하지 않음) · `not_found`(Ontology에 없는 id).
-- 각 결과에 `element_id`, `handle`, `source_file`, `open_drawing`, `entity`(종류·레이어·블록 이름·위치 요약)가 있고, `matched_handles`에 편집 가능한 handle만 모읍니다.
+- 각 결과에 `element_id`, `handle`, `source_file`, `open_drawing`, `entity`(종류·레이어·블록 이름·위치 요약)가 있고, `matched_handles`에 검토 후보 handle을 모읍니다.
+  응답은 `source_revision_verified=false`, `may_execute_mutation=false`를 명시합니다. 편집 권한이나 변경 계획은 생성하지 않습니다.
 - 도면을 절대 수정하지 않습니다.
 
 권장 흐름:
 
 1. `ontology_auto_context(task)` — 대상 후보를 모으고 `in_open_drawing`으로 지금 도면의 것인지 확인
 2. 필요하면 해당 도면을 `open_drawing`으로 연 뒤 `ontology_locate(element_ids)` — `status="matched"`인 handle만 고름
-3. `get_entity` / `move_entities` / `delete_entities` / `set_entity_properties` 등 편집 도구에 그 handle을 넘김
+3. `get_entity`로 후보를 검토하고, 실제 편집 직전에 선택 도면·원본 리비전·엔티티 상태를 다시 확인합니다.
+   C# 변경 계획은 문서 ID와 fingerprint를 바인딩해 미리보기 후 적용합니다. Python 조회 결과만으로 이 바인딩을 대체할 수 없습니다.
 
 자동화 진입점 연결: `draw_batch(operations, task="…", auto_context=true)`로 호출하거나 `POWERCAD_ONTOLOGY_AUTO_CONTEXT=1`을 켜면
 작도 전에 `ontology_auto_context(task)`가 실행되어 결과의 `ontology_context`에 붙습니다. 서비스가 꺼져 있어도 작도는 그대로 진행되고
 `ontology_context.available=false`와 오류 문구만 남습니다. 조회가 성공하면 `ontology_targets`도 붙습니다: 묶음 안의 객체를 추가 Ontology 호출 없이
 `ontology_locate`와 같은 규칙으로 열린 도면에 대조해, `matched`인 객체의 `element_id`·`class`·`name`·`handle`·엔티티 종류와 상태별 개수(`counts`)를 요약합니다.
-작도 작업 자체는 바뀌지 않습니다. Ontology 결과는 참고 정보이므로, 실제 수정에는 `matched` handle만 쓰세요.
+작도 작업 자체는 바뀌지 않습니다. Ontology 결과는 참고 후보이며 `matched`만으로 수정 대상을 확정하지 않습니다.
 
 ## 보안
 

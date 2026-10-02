@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import ntpath
+import posixpath
 import re
 import socket
 import urllib.error
@@ -815,6 +817,23 @@ def in_drawing(source_file: Any, open_drawing: dict[str, Any] | None) -> bool | 
     return key in keys
 
 
+def _absolute_source_key(value: Any) -> tuple[str, str] | None:
+    """Lexical path evidence only; never access files or infer a source revision."""
+    text = str(value or "").strip().strip('"')
+    drive, _ = ntpath.splitdrive(text)
+    if drive and ntpath.isabs(text):
+        flavor, path = "windows", ntpath.normpath(text).casefold()
+    elif text.startswith("/"):
+        flavor, path = "posix", posixpath.normpath(text)
+    else:
+        return None
+    for extension in CAD_EXTENSIONS:
+        if path.lower().endswith(extension):
+            path = path[: -len(extension)]
+            break
+    return flavor, path
+
+
 def entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
     keys = ("handle", "type", "layer", "name", "text", "insert", "center", "start", "end")
     return {key: entity[key] for key in keys if entity.get(key) not in (None, "")}
@@ -853,7 +872,7 @@ def match_element(
     *,
     element_id: str | None = None,
 ) -> dict[str, Any]:
-    """Decide whether an Ontology element can be acted on in the open drawing. Never edits anything.
+    """Find plausible live candidates for an Ontology element. Never authorizes edits.
 
     ``lookup(handle)`` returns the live entity dict or None when the handle does not exist.
     Status: ``matched`` (same drawing, handle exists, entity plausible), ``mismatch`` (handle exists but
@@ -874,6 +893,10 @@ def match_element(
         "open_drawing": label,
     }
     same = in_drawing(element.get("source_file"), open_drawing)
+    source_path = _absolute_source_key(element.get("source_file"))
+    live_path = _absolute_source_key((open_drawing or {}).get("path"))
+    if source_path and live_path and source_path != live_path:
+        return _drop_empty(out | {"status": "other_drawing", "note": "source and live absolute paths differ"})
     if not same:
         out["status"] = "other_drawing"
         if same is None:
@@ -939,6 +962,9 @@ def _locate_report(results: list[dict[str, Any]], open_drawing: dict[str, Any] |
         "matched_handles": [r["handle"] for r in results if r["status"] == "matched"],
         "results": results,
         "read_only": True,
+        "match_scope": "filename_and_live_entity_plausibility",
+        "source_revision_verified": False,
+        "may_execute_mutation": False,
     }
 
 
@@ -952,7 +978,7 @@ def targets_summary(
     """Locate the elements an auto_context bundle already carries (no extra Ontology calls).
 
     Only elements of the open drawing are looked up; the rest are just counted as ``other_drawing``.
-    Returns the matched handles (with class/name/entity type) the agent can pass to the edit tools.
+    Returns candidate handles for review, without verifying a source revision or edit-time identity.
     """
     by_class = (bundle.get("elements") or {}).values()
     elements = [*(bundle.get("search") or []), *(e for items in by_class for e in items)]
@@ -987,6 +1013,9 @@ def targets_summary(
         "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
         "counts": counts,
         "targets": targets,
+        "match_scope": "filename_and_live_entity_plausibility",
+        "source_revision_verified": False,
+        "may_execute_mutation": False,
     }
     if other:
         out["not_actionable"] = other

@@ -977,8 +977,10 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         Handles are only unique per drawing, so for each id this checks that the element's source file is
         the open drawing (basename, case-insensitive, .dwg = .dxf), that the handle exists there and that
         the entity is plausible for the element (type, layer, block). Status per id: matched,
-        mismatch, handle_missing, other_drawing or not_found. Only `matched` handles are safe to pass to
-        get_entity / move_entities / delete_entities / set_entity_properties. Never modifies the drawing."""
+        mismatch, handle_missing, other_drawing or not_found. Use `matched` handles with
+        get_entity for review. A match is a candidate, not edit authorization: source revision and
+        document identity are not verified, and a DWG/DXF copy may have different handles. Revalidate
+        the chosen live document and entity immediately before editing. Never modifies the drawing."""
         return cad.locate(element_ids)
 
     return mcp
