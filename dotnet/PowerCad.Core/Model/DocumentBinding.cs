@@ -22,4 +22,6 @@ public sealed class BoundCadDocument(ICadDocument inner, string id) : ICadDocume
     public JsonObject View(Vec3 min, Vec3 max, int? width, int? height, string? expectedDocumentId = null) =>
         inner.View(min, max, width, height, id);
     public JsonObject Save(SaveRequest request, string? expectedDocumentId = null) => inner.Save(request, id);
+    public JsonObject GetDrawingInventory(InventoryOptions options, string? expectedDocumentId = null) =>
+        inner.GetDrawingInventory(options, id);
 }

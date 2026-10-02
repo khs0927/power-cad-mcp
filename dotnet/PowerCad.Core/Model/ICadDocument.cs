@@ -26,6 +26,13 @@ public interface ICadDocument
     /// has already validated the path, format, overwrite and user-confirmation rules.
     /// </summary>
     JsonObject Save(SaveRequest request, string? expectedDocumentId = null);
+
+    /// <summary>
+    /// Read-only, bounded inventory of layouts, block definitions, block references (nested to
+    /// <see cref="InventoryOptions.MaxDepth"/>) and XREFs, built inside one transaction that never commits.
+    /// XREF files are not opened. Implementations run <see cref="Commands.DrawingInventory.Build"/> in a read transaction.
+    /// </summary>
+    JsonObject GetDrawingInventory(InventoryOptions options, string? expectedDocumentId = null);
 }
 
 /// <summary>A validated save request. Path is absolute; Format is "dwg" or "dxf".</summary>
@@ -93,6 +100,21 @@ public interface ICadTransaction
 
     /// <summary>True when the named resource exists. kind: text_style, dim_style, linetype, layer.</summary>
     bool ResourceExists(string kind, string name);
+
+    /// <summary>Every block table record (named, anonymous, layout and XREF blocks), opened for read.</summary>
+    IEnumerable<CadBlockDefinition> BlockDefinitions();
+
+    /// <summary>Every layout (Model first), ordered by tab.</summary>
+    IReadOnlyList<CadLayout> Layouts();
+
+    /// <summary>
+    /// Block references owned directly by the block table record <paramref name="ownerBlock"/> (a layout block
+    /// such as *Model_Space, or a block definition). Empty for unknown names and XREFs.
+    /// </summary>
+    IEnumerable<CadBlockReference> BlockReferences(string ownerBlock);
+
+    /// <summary>XREFs as the host database knows them, with the nested XREF graph. XREF files are not opened.</summary>
+    IReadOnlyList<CadXref> Xrefs();
 }
 
 /// <summary>Changes to a block reference (doors, windows, openings...). Null means "leave as is".</summary>

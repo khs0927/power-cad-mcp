@@ -40,7 +40,7 @@ public sealed class InMemoryCadDocument : ICadDocument
                 ["entity_count"] = _store.Entities.Count,
                 ["current_layer"] = _store.CurrentLayer,
                 ["layers"] = new JsonArray(_store.Layers.Keys.Order().Select(l => (JsonNode)l).ToArray()),
-                ["blocks"] = new JsonArray(_store.Blocks.Keys.Order().Select(b => (JsonNode)b).ToArray()),
+                ["blocks"] = new JsonArray(_store.Blocks.Keys.Where(b => !b.StartsWith('*')).Order().Select(b => (JsonNode)b).ToArray()),
             };
         }
     }
@@ -114,6 +114,9 @@ public sealed class InMemoryCadDocument : ICadDocument
         };
     }
 
+    public JsonObject GetDrawingInventory(InventoryOptions options, string? expectedDocumentId = null) =>
+        Execute(tx => DrawingInventory.Build(tx, options), commit: false, expectedDocumentId);
+
     // ----------------------------------------------------------------- setup
     public void AddLayer(string name, bool locked = false)
     {
@@ -144,7 +147,84 @@ public sealed class InMemoryCadDocument : ICadDocument
         }
     }
 
+    /// <summary>
+    /// Defines a block with simulated contents: entity counts by DXF type, nested references, attribute
+    /// definitions and, for an anonymous dynamic representation ("*U7"), its dynamic parent block.
+    /// </summary>
+    public void DefineCompositeBlock(
+        string name,
+        IReadOnlyDictionary<string, int> contents,
+        IReadOnlyList<SimulatedReference>? references = null,
+        IReadOnlyList<CadAttributeDefinition>? attributeDefinitions = null,
+        string? dynamicParent = null)
+    {
+        lock (_lock)
+        {
+            _store.Blocks[name] = new BlockDef(0, [], attributeDefinitions?.ToDictionary(a => a.Tag, a => a.DefaultValue) ?? [])
+            {
+                Contents = contents.ToDictionary(),
+                References = references?.ToList() ?? [],
+                AttributeDefinitions = attributeDefinitions?.ToList(),
+                DynamicParent = dynamicParent,
+            };
+        }
+    }
+
+    /// <summary>Adds a paper-space layout (tab order follows insertion) with viewports and block references.</summary>
+    public void AddLayout(string name, string media, int viewports, params SimulatedReference[] references)
+    {
+        lock (_lock)
+        {
+            var block = _store.Layouts.Count == 0 ? "*Paper_Space" : $"*Paper_Space{_store.Layouts.Count - 1}";
+            _store.Layouts.Add(new SimLayout(name, block, media, viewports, [.. references]));
+        }
+    }
+
+    /// <summary>Records an XREF the way a host database knows it (the file is never read).</summary>
+    public void AddXref(string name, string path, string status = "resolved", bool overlay = false, bool nested = false, params string[] nestedXrefs)
+    {
+        lock (_lock)
+        {
+            _store.Xrefs.Add(new CadXref(name, path, status, overlay) { IsNested = nested, NestedXrefs = [.. nestedXrefs] });
+        }
+    }
+
     public string Add(CreateSpec spec) => Execute(tx => tx.Create(spec), commit: true);
+
+    /// <summary>
+    /// <see cref="CreateSample"/> plus what a sheet set carries: a title block with attributes and a nested logo,
+    /// an anonymous dynamic door representation, two paper-space layouts and attached/overlaid/nested XREFs.
+    /// </summary>
+    public static InMemoryCadDocument CreateSheetSample()
+    {
+        var doc = CreateSample();
+        doc.DefineCompositeBlock("LOGO", new Dictionary<string, int> { ["CIRCLE"] = 1, ["TEXT"] = 1 });
+        doc.DefineCompositeBlock(
+            "TITLE_BLOCK",
+            new Dictionary<string, int> { ["LINE"] = 12, ["TEXT"] = 4 },
+            [new SimulatedReference("3A0", "LOGO", new Vec3(10, 10))],
+            [
+                new CadAttributeDefinition("SHEET_NO", "Sheet number", "A-101", false),
+                new CadAttributeDefinition("TITLE", "Drawing title", "PLAN", false),
+                new CadAttributeDefinition("FIRM", "Firm", "POWER CAD", true),
+            ]);
+        doc.DefineCompositeBlock("*U7", new Dictionary<string, int> { ["LINE"] = 2, ["ARC"] = 1 }, dynamicParent: "DOOR_SINGLE");
+        doc.AddXref("SITE", @"..\xref\site.dwg", "resolved", false, false, "SURVEY");
+        doc.AddXref("SURVEY", @"..\xref\survey.dwg", "file_not_found", overlay: true, nested: true);
+        doc.AddLayout(
+            "A1 Sheet",
+            "ISO_full_bleed_A1_(841.00_x_594.00_MM)",
+            2,
+            new SimulatedReference("3B0", "TITLE_BLOCK", new Vec3(0, 0), "A-ANNO", Attributes: new Dictionary<string, string> { ["SHEET_NO"] = "A-101", ["TITLE"] = "1F PLAN" }),
+            new SimulatedReference("3B1", "*U7", new Vec3(400, 200), "A-DOOR", Rotation: 90),
+            new SimulatedReference("3B2", "SITE", new Vec3(0, 0)));
+        doc.AddLayout(
+            "A3 Detail",
+            "ISO_full_bleed_A3_(420.00_x_297.00_MM)",
+            1,
+            new SimulatedReference("3C0", "TITLE_BLOCK", new Vec3(0, 0), "A-ANNO", Scale: 0.5, Attributes: new Dictionary<string, string> { ["SHEET_NO"] = "A-501", ["TITLE"] = "DETAIL" }));
+        return doc;
+    }
 
     /// <summary>A small apartment plan: walls, room names, a dynamic door, a plain window, a locked layer.</summary>
     public static InMemoryCadDocument CreateSample()
@@ -175,7 +255,18 @@ public sealed class InMemoryCadDocument : ICadDocument
     }
 
     // --------------------------------------------------------------- storage
-    private sealed record BlockDef(double Width, Dictionary<string, double> Dynamic, Dictionary<string, string> Attributes);
+    private sealed record BlockDef(double Width, Dictionary<string, double> Dynamic, Dictionary<string, string> Attributes)
+    {
+        public Dictionary<string, int> Contents { get; init; } = [];
+
+        public List<SimulatedReference> References { get; init; } = [];
+
+        public List<CadAttributeDefinition>? AttributeDefinitions { get; init; }
+
+        public string? DynamicParent { get; init; }
+    }
+
+    private sealed record SimLayout(string Name, string Block, string Media, int Viewports, List<SimulatedReference> References);
 
     private sealed class Store
     {
@@ -197,6 +288,10 @@ public sealed class InMemoryCadDocument : ICadDocument
 
         public long NextHandle { get; set; } = 0x2A0;
 
+        public List<SimLayout> Layouts { get; init; } = [];
+
+        public List<CadXref> Xrefs { get; init; } = [];
+
         public Store Clone() => new()
         {
             Entities = Entities.ToDictionary(kv => kv.Key, kv => kv.Value with { Props = (JsonObject)kv.Value.Props.DeepClone() }, StringComparer.OrdinalIgnoreCase),
@@ -208,6 +303,8 @@ public sealed class InMemoryCadDocument : ICadDocument
             Linetypes = new HashSet<string>(Linetypes, StringComparer.OrdinalIgnoreCase),
             Blocks = new Dictionary<string, BlockDef>(Blocks, StringComparer.OrdinalIgnoreCase),
             NextHandle = NextHandle,
+            Layouts = [.. Layouts],
+            Xrefs = [.. Xrefs],
         };
     }
 
@@ -740,7 +837,7 @@ public sealed class InMemoryCadDocument : ICadDocument
             ["text_styles"] = new JsonArray(store.TextStyles.Order().Select(x => (JsonNode)new JsonObject { ["name"] = x }).ToArray()),
             ["dim_styles"] = new JsonArray(store.DimStyles.Order().Select(x => (JsonNode)new JsonObject { ["name"] = x }).ToArray()),
             ["linetypes"] = new JsonArray(store.Linetypes.Order().Select(x => (JsonNode)x).ToArray()),
-            ["blocks"] = new JsonArray(store.Blocks.OrderBy(b => b.Key).Select(b => (JsonNode)new JsonObject
+            ["blocks"] = new JsonArray(store.Blocks.Where(b => !b.Key.StartsWith('*')).OrderBy(b => b.Key).Select(b => (JsonNode)new JsonObject
             {
                 ["name"] = b.Key,
                 ["width"] = b.Value.Width,
@@ -811,5 +908,144 @@ public sealed class InMemoryCadDocument : ICadDocument
             "block" => store.Blocks.ContainsKey(name),
             _ => false,
         };
+
+        // ------------------------------------------------------------ inventory
+        private const string ModelSpace = "*Model_Space";
+
+        public IEnumerable<CadBlockDefinition> BlockDefinitions()
+        {
+            var modelRefs = ModelReferences().ToList();
+            var rows = new List<CadBlockDefinition>
+            {
+                new(ModelSpace)
+                {
+                    IsLayout = true,
+                    CountsByType = Tally(store.Order.Select(h => store.Entities[h].Type)),
+                    NestedBlocks = Tally(modelRefs.Select(r => r.EffectiveName)),
+                },
+            };
+            foreach (var layout in store.Layouts)
+            {
+                var refs = layout.References.Select(Reference).ToList();
+                rows.Add(new CadBlockDefinition(layout.Block)
+                {
+                    IsLayout = true,
+                    CountsByType = Tally(Enumerable.Repeat("VIEWPORT", layout.Viewports).Concat(refs.Select(_ => EntityTypes.Insert))),
+                    NestedBlocks = Tally(refs.Select(r => r.EffectiveName)),
+                });
+            }
+
+            foreach (var (name, def) in store.Blocks.OrderBy(b => b.Key, StringComparer.Ordinal))
+            {
+                var attributes = def.AttributeDefinitions
+                    ?? def.Attributes.Select(a => new CadAttributeDefinition(a.Key, a.Key, a.Value, false)).ToList();
+                var refs = def.References.Select(Reference).ToList();
+                var counts = new Dictionary<string, int>(def.Contents, StringComparer.OrdinalIgnoreCase);
+                foreach (var type in refs.Select(_ => EntityTypes.Insert).Concat(attributes.Select(_ => "ATTDEF")))
+                {
+                    counts[type] = counts.TryGetValue(type, out var n) ? n + 1 : 1;
+                }
+
+                rows.Add(new CadBlockDefinition(name)
+                {
+                    EffectiveName = def.DynamicParent ?? name,
+                    IsDynamic = def.Dynamic.Count > 0,
+                    IsAnonymous = name.StartsWith('*'),
+                    AttributeDefinitions = attributes,
+                    CountsByType = counts,
+                    NestedBlocks = Tally(refs.Select(r => r.EffectiveName)),
+                });
+            }
+
+            rows.AddRange(store.Xrefs.Select(x => new CadBlockDefinition(x.Name) { IsXref = true }));
+            return rows;
+        }
+
+        public IReadOnlyList<CadLayout> Layouts()
+        {
+            var rows = new List<CadLayout> { new("Model", 0, true, ModelSpace) };
+            rows.AddRange(store.Layouts.Select((l, i) => new CadLayout(l.Name, i + 1, false, l.Block)
+            {
+                PlotDevice = "DWG To PDF.pc3",
+                Media = l.Media,
+                PaperUnits = "Millimeters",
+                PlotRotation = "Degrees000",
+            }));
+            return rows;
+        }
+
+        public IEnumerable<CadBlockReference> BlockReferences(string ownerBlock)
+        {
+            if (string.Equals(ownerBlock, ModelSpace, StringComparison.OrdinalIgnoreCase))
+            {
+                return ModelReferences().ToList();
+            }
+
+            if (store.Layouts.FirstOrDefault(l => string.Equals(l.Block, ownerBlock, StringComparison.OrdinalIgnoreCase)) is { } layout)
+            {
+                return layout.References.Select(Reference).ToList();
+            }
+
+            return store.Blocks.TryGetValue(ownerBlock, out var def)
+                ? def.References.Select(Reference).ToList()
+                : new List<CadBlockReference>();
+        }
+
+        public IReadOnlyList<CadXref> Xrefs() => store.Xrefs.ToList();
+
+        private IEnumerable<CadBlockReference> ModelReferences() =>
+            store.Order.Select(h => store.Entities[h]).Where(e => e.Type == EntityTypes.Insert).Select(e =>
+            {
+                var name = e.Props["name"]!.GetValue<string>();
+                var effective = store.Blocks.TryGetValue(name, out var def) ? def.DynamicParent ?? name : name;
+                var attributes = e.Props["attributes"] is JsonObject attrs
+                    ? attrs.Select(a => KeyValuePair.Create(a.Key, a.Value is JsonValue v && v.TryGetValue<string>(out var text) ? text : a.Value?.ToJsonString() ?? "")).ToList()
+                    : new List<KeyValuePair<string, string>>();
+                return new CadBlockReference(
+                    e.Handle,
+                    name,
+                    effective,
+                    e.Point("position") ?? new Vec3(0, 0),
+                    e.Number("rotation") ?? 0,
+                    e.Point("scale") ?? new Vec3(1, 1, 1),
+                    e.Layer)
+                {
+                    IsDynamic = e.Props["dynamic"] is JsonObject { Count: > 0 },
+                    Attributes = attributes,
+                };
+            });
+
+        private CadBlockReference Reference(SimulatedReference r)
+        {
+            var effective = store.Blocks.TryGetValue(r.BlockName, out var def) ? def.DynamicParent ?? r.BlockName : r.BlockName;
+            var dynamic = store.Blocks.TryGetValue(effective, out var parent) && parent.Dynamic.Count > 0;
+            return new CadBlockReference(r.Handle, r.BlockName, effective, r.Position, r.Rotation, new Vec3(r.Scale, r.Scale, r.Scale), r.Layer)
+            {
+                IsDynamic = dynamic,
+                Attributes = r.Attributes?.ToList() ?? new List<KeyValuePair<string, string>>(),
+            };
+        }
+
+        private static Dictionary<string, int> Tally(IEnumerable<string> keys)
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var key in keys)
+            {
+                counts[key] = counts.TryGetValue(key, out var n) ? n + 1 : 1;
+            }
+
+            return counts;
+        }
     }
 }
+
+/// <summary>A simulated block reference inside a layout or a block definition (see <see cref="InMemoryCadDocument"/>).</summary>
+public sealed record SimulatedReference(
+    string Handle,
+    string BlockName,
+    Vec3 Position,
+    string Layer = "0",
+    double Rotation = 0,
+    double Scale = 1,
+    IReadOnlyDictionary<string, string>? Attributes = null);
+

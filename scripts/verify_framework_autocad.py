@@ -94,6 +94,10 @@ async def verify(executable: Path, server: Path, output: Path) -> None:
             await call("cad_query_page", snapshot_id=snapshot["snapshot_id"])
             await call("cad_review_snapshot", snapshot_id=snapshot["snapshot_id"])
             checks.append("native snapshot, frozen page and bundled standard review")
+            inventory = await call("cad_inventory")
+            assert any(layout["is_model"] for layout in inventory["layouts"]), "inventory has no Model layout"
+            assert any(block["name"].upper() == "*MODEL_SPACE" for block in inventory["block_definitions"])
+            checks.append("native read-only layout/block/XREF inventory")
             plan = await call(
                 "cad_plan_create",
                 snapshot_id=snapshot["snapshot_id"],
