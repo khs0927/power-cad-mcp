@@ -13,7 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__
+from . import __version__, ontology
 from .backends import CadBackend, create_backend
 from .colors import parse_color
 from .config import Settings
@@ -29,6 +29,9 @@ Power CAD drives AutoCAD (live, over COM on Windows) or a headless DXF drawing.
 - Prefer draw_batch for many primitives: it is one round trip and returns every handle.
 - Organise geometry on layers (create_layer + set_current_layer, or pass `layer` per entity).
 - Finish with zoom_extents and save_drawing / export_drawing when the user wants a file.
+- Before an automation, call ontology_auto_context(task) to pull every relevant door/window/wall/space,
+  detail sheet and block from the Ontology building-data store instead of asking the user to list them.
+  The ontology_* tools are read-only; their results are hints, so verify against the live drawing.
 """
 
 PointArg = Annotated[list[float], Field(min_length=2, max_length=3, description="[x, y] or [x, y, z]")]
@@ -43,6 +46,8 @@ LinetypeArg = Annotated[
     str | None, Field(description="Linetype name, e.g. CONTINUOUS, DASHED, CENTER, HIDDEN")
 ]
 HandlesArg = Annotated[list[str], Field(min_length=1, description="Entity handles (hex strings)")]
+ProjectArg = Annotated[str | None, Field(description="Ontology project_id filter")]
+CursorArg = Annotated[str | None, Field(description="next_cursor from a previous page")]
 
 READ = ToolAnnotations(
     read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
@@ -52,6 +57,9 @@ WRITE = ToolAnnotations(
 )
 DESTRUCTIVE = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
+)
+ONTOLOGY = ToolAnnotations(
+    read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=True
 )
 
 
@@ -67,6 +75,18 @@ class PowerCad:
     def __init__(self, backend: CadBackend, settings: Settings):
         self.backend = backend
         self.settings = settings
+        self._ontology: ontology.OntologyClient | None = None
+
+    @property
+    def ontology(self) -> ontology.OntologyClient:
+        """Created on first use so a bad POWERCAD_ONTOLOGY_URL only affects the ontology_* tools."""
+        if self._ontology is None:
+            s = self.settings
+            self._ontology = ontology.OntologyClient(s.ontology_url, s.ontology_timeout, s.ontology_token)
+        return self._ontology
+
+    def auto_context(self, task: str, drawing: str | None = None, limit: int = 20) -> dict[str, Any]:
+        return ontology.auto_context(self.ontology, task, drawing, limit=limit)
 
     def path(self, value: str, *, ext: str | None = None) -> str:
         value = os.path.expandvars(os.path.expanduser(value.strip().strip('"')))
@@ -550,8 +570,31 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
             ),
         ],
         stop_on_error: bool = False,
+        task: Annotated[
+            str | None,
+            Field(description="Free-text description of the automation (KO/EN), used for auto_context"),
+        ] = None,
+        auto_context: Annotated[
+            bool | None,
+            Field(
+                description="Run ontology_auto_context(task) first and attach it as `ontology_context`. "
+                "Default: POWERCAD_ONTOLOGY_AUTO_CONTEXT"
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Create many entities in one call. Returns the created entity (or error) for every operation."""
+        context: dict[str, Any] | None = None
+        has_task = bool((task or "").strip())
+        if auto_context and not has_task:
+            raise CadError("auto_context needs a `task` describing the automation.")
+        if auto_context is None:  # env default: only when the caller described the task
+            auto_context = settings.ontology_auto_context and has_task
+        if auto_context:
+            try:
+                context = cad.auto_context(task or "")
+            except ontology.OntologyError as exc:
+                # The pre-step is advisory: drawing still proceeds when the Ontology service is down.
+                context = {"available": False, "error": str(exc)}
         results: list[dict[str, Any]] = []
         created = 0
         for i, item in enumerate(operations):
@@ -564,7 +607,10 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
                 results.append({"index": i, "ok": False, "op": op, "error": str(exc)})
                 if stop_on_error:
                     break
-        return {"created": created, "failed": len(results) - created, "results": results}
+        out: dict[str, Any] = {"created": created, "failed": len(results) - created, "results": results}
+        if context is not None:
+            out["ontology_context"] = context
+        return out
 
     # ------------------------------------------------------------------- blocks
     @tool(READ)
@@ -736,5 +782,142 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
             b.export(target, "png")
             with open(target, "rb") as fh:
                 return Image(data=fh.read(), format="png")
+
+    # ----------------------------------------------------------------- ontology
+    @tool(ONTOLOGY)
+    def ontology_catalog(project_id: ProjectArg = None) -> dict[str, Any]:
+        """Table of contents of the Ontology building-data store: element counts by kind (with Korean
+        aliases), drawing categories, layers, blocks, storeys and projects. Use it to see what can be
+        pulled up automatically."""
+        data = cad.ontology.catalog(project_id)
+        return data if isinstance(data, dict) else {"catalog": data}
+
+    @tool(ONTOLOGY)
+    def ontology_find_elements(
+        kind: Annotated[
+            str | None,
+            Field(
+                description="Door, Window, Wall, Space, Column, Beam, SteelSection ... "
+                "or Korean (문, 창호, 벽); comma separated for several"
+            ),
+        ] = None,
+        project_id: ProjectArg = None,
+        storey: Annotated[str | None, Field(description="e.g. 2F, 2층, B1F (filtered client-side)")] = None,
+        sheet: Annotated[
+            str | None, Field(description="Sheet / layout / file name substring (filtered client-side)")
+        ] = None,
+        text: Annotated[
+            str | None, Field(description="Substring of label or attribute values, e.g. AW-02")
+        ] = None,
+        drawing_category: Annotated[
+            str | None, Field(description="평면도/상세도/... or plan/detail/section/elevation/structural")
+        ] = None,
+        layer: Annotated[str | None, Field(description="Layer name, wildcards allowed (A-WAL*)")] = None,
+        block_name: Annotated[str | None, Field(description="Block name, wildcards allowed (DOOR*)")] = None,
+        bbox: Annotated[
+            str | None, Field(description="min_x,min_y,max_x,max_y in drawing coordinates")
+        ] = None,
+        include_properties: bool = True,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        cursor: CursorArg = None,
+    ) -> dict[str, Any]:
+        """List building elements by kind (doors as doors, windows as windows, walls as walls...) with
+        source file, sheet, layer, block name, handle, attributes and properties. Page with next_cursor."""
+        page = cad.ontology.elements(
+            kind,
+            project_id=project_id,
+            storey=storey,
+            sheet=sheet,
+            text=text,
+            drawing_category=drawing_category,
+            layer=layer,
+            block_name=block_name,
+            bbox=bbox,
+            include_properties=include_properties,
+            limit=limit,
+            cursor=cursor,
+        )
+        return {"count": len(page["items"]), "elements": page["items"], "next_cursor": page["next_cursor"]}
+
+    @tool(ONTOLOGY)
+    def ontology_blocks(
+        category: Annotated[
+            str | None,
+            Field(description="Kind the block's instances are classified as: Door, Window, 창호 ..."),
+        ] = None,
+        name_like: Annotated[
+            str | None, Field(description="Block name substring or wildcard (DOOR*)")
+        ] = None,
+        project_id: ProjectArg = None,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        cursor: CursorArg = None,
+    ) -> dict[str, Any]:
+        """List CAD block definitions organised by category, with instance counts, attribute tags,
+        layers and example files."""
+        page = cad.ontology.blocks(category, name_like, project_id=project_id, limit=limit, cursor=cursor)
+        return {"count": len(page["items"]), "blocks": page["items"], "next_cursor": page["next_cursor"]}
+
+    @tool(ONTOLOGY)
+    def ontology_drawings(
+        category: Annotated[
+            str | None,
+            Field(
+                description="plan, detail, section, elevation, structural, schedule, or Korean "
+                "(평면도, 상세도, 단면도, 입면도, 구조도, 창호도 ...)"
+            ),
+        ] = None,
+        q: Annotated[str | None, Field(description="Filter by drawing number / title / file name")] = None,
+        project_id: ProjectArg = None,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+        cursor: CursorArg = None,
+    ) -> dict[str, Any]:
+        """List sheets (drawing number, title, scale, category, file, layout), e.g. every detail drawing."""
+        page = cad.ontology.drawings(category, q, project_id=project_id, limit=limit, cursor=cursor)
+        return {"count": len(page["items"]), "drawings": page["items"], "next_cursor": page["next_cursor"]}
+
+    @tool(ONTOLOGY)
+    def ontology_element_context(
+        element_id: Annotated[str, Field(min_length=1)],
+        hops: Annotated[int, Field(ge=1, le=2)] = 1,
+    ) -> dict[str, Any]:
+        """One element plus its graph neighbours (storey, space, host wall, sheet, block definition ...)."""
+        data = cad.ontology.element_context(element_id, hops)
+        return data if isinstance(data, dict) else {"context": data}
+
+    @tool(ONTOLOGY)
+    def ontology_search(
+        query: Annotated[str, Field(min_length=1, description="Korean or English question / keywords")],
+        k: Annotated[int, Field(ge=1, le=100)] = 10,
+        kind: Annotated[str | None, Field(description="Optional kind filter (Door, Window ...)")] = None,
+        storey: str | None = None,
+        project_id: ProjectArg = None,
+        model: Annotated[
+            str | None, Field(description="Embedding model hint; ignored by APIs that do not support it")
+        ] = None,
+    ) -> dict[str, Any]:
+        """Hybrid lexical + vector + graph search over every parsed drawing."""
+        hits = cad.ontology.search(query, k=k, model=model, kind=kind, storey=storey, project_id=project_id)
+        return {"count": len(hits), "hits": hits}
+
+    @tool(ONTOLOGY)
+    def ontology_auto_context(
+        task: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="What the automation will do, e.g. '2층 평면도 문 리스트 갱신' or "
+                "'창호상세도에 AW-02 추가'",
+            ),
+        ],
+        drawing: Annotated[
+            str | None, Field(description="Optional sheet number / file name to focus on")
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 20,
+    ) -> dict[str, Any]:
+        """Pull up every relevant element for a task without the user listing them: infers element
+        classes (Door/Window/Wall/Space/Column/Beam/SteelSection...), drawing categories (plan/detail/...),
+        storey and marks from the text, then returns search hits, elements by class, sheets by category
+        and blocks in one bundle."""
+        return cad.auto_context(task, drawing, limit)
 
     return mcp
