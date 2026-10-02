@@ -1,0 +1,72 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
+using PowerCad.Core.Model;
+
+namespace PowerCad.Core.Commands;
+
+public sealed partial class CommandDispatcher
+{
+    private JsonObject ExtractSnapshot(ICadTransaction tx, Params p)
+    {
+        p.AllowOnly("max_entities");
+        var max = p.Int("max_entities", 1000, 1, 1000);
+        var entities = new JsonArray();
+        var counts = new JsonObject();
+        var unsupported = new JsonObject();
+        var known = new HashSet<string>(["LINE", "LWPOLYLINE", "CIRCLE", "ARC", "TEXT", "MTEXT", "INSERT", "POINT", "DIMENSION", "HATCH", "LEADER"]);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var raw = 0;
+        var bytes = 0;
+        var truncated = false;
+        foreach (var entity in tx.ScanModelSpace())
+        {
+            raw++;
+            counts[entity.Type] = (counts[entity.Type]?.GetValue<int>() ?? 0) + 1;
+            if (!known.Contains(entity.Type))
+                unsupported[entity.Type] = (unsupported[entity.Type]?.GetValue<int>() ?? 0) + 1;
+            hash.AppendData(Encoding.UTF8.GetBytes($"{entity.Handle}:{entity.Fingerprint}\n"));
+            var json = entity.ToJson();
+            var size = Encoding.UTF8.GetByteCount(json.ToJsonString(CadJson.Options));
+            // Leave room for metadata and the pipe envelope (the transport is capped at 1 MiB).
+            if (entities.Count < max && bytes + size < 600_000)
+            {
+                entities.Add(json);
+                bytes += size;
+            }
+            else truncated = true;
+        }
+
+        var identity = document.Describe();
+        var layerRows = tx.Layers();
+        foreach (var layer in layerRows) hash.AppendData(Encoding.UTF8.GetBytes(layer.ToJsonString(CadJson.Options)));
+        var layers = new JsonArray();
+        foreach (var layer in layerRows.Take(1000))
+        {
+            var size = Encoding.UTF8.GetByteCount(layer.ToJsonString(CadJson.Options));
+            if (bytes + size >= 650_000) break;
+            layers.Add(layer.DeepClone());
+            bytes += size;
+        }
+        return new JsonObject
+        {
+            ["document_id"] = identity["document_id"]?.DeepClone(),
+            ["session_id"] = identity["session_id"]?.DeepClone(),
+            ["units"] = identity["units"]?.DeepClone(),
+            ["content_hash"] = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(),
+            ["scope"] = "model_space_top_level",
+            ["excluded_scopes"] = new JsonArray("paper_space", "block_definitions", "nested_instances", "xref_contents"),
+            ["raw_count"] = raw,
+            ["processed_count"] = raw,
+            ["returned_count"] = entities.Count,
+            ["unsupported_count"] = unsupported.Sum(row => row.Value!.GetValue<int>()),
+            ["unsupported_types"] = unsupported,
+            ["counts_by_type"] = counts,
+            ["truncated"] = truncated,
+            ["entities"] = entities,
+            ["layers"] = layers,
+            ["layer_count"] = layerRows.Count,
+            ["resources_truncated"] = layers.Count != layerRows.Count,
+        };
+    }
+}

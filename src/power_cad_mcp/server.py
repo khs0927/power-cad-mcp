@@ -295,6 +295,30 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         """Name, path, units, current layer, entity count and extents of the active drawing."""
         return b.drawing_info()
 
+    @tool(READ)
+    def drawing_census(
+        path: Annotated[str, Field(description="Drawing to inventory (.dxf; .dwg needs ODA File Converter)")],
+        out_dir: Annotated[
+            str | None, Field(description="Where census.md / census.json go (default: <drawing>_census)")
+        ] = None,
+        standard: Annotated[
+            str | None, Field(description="ZIUM floor_plan_standard.json for sheet scale and layer mapping")
+        ] = None,
+    ) -> dict[str, Any]:
+        """Inventory every entity of a drawing file and prove none was skipped.
+
+        Buckets each entity into a title-block sheet, outside the sheets, a layout or a block definition,
+        checks the total against the file, and reports unmapped layers, blocks, hatches, texts and
+        entities the query tools cannot see (leaders, proxies, OLE). Reads the file; never changes it.
+        """
+        from pathlib import Path
+
+        from .census import run
+
+        src = Path(cad.path(path))
+        out = Path(cad.path(out_dir)) if out_dir else src.with_name(src.stem + "_census")
+        return run(src, Path(cad.path(standard)) if standard else None, out)
+
     # ------------------------------------------------------------------- layers
     @tool(READ)
     def list_layers() -> list[dict[str, Any]]:

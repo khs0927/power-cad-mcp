@@ -74,6 +74,8 @@ jobs:
             dist/PowerCad.bundle/
             dist/server/win-x64/power-cad-server.exe
             scripts/install_autocad_plugin.ps1
+            scripts/register_codex.ps1
+            docs/framework/FRAMEWORK_IMPLEMENTATION.md
 
   build:
     needs: [lint, test]

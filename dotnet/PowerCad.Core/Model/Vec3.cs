@@ -25,7 +25,7 @@ public readonly record struct Vec3(double X, double Y, double Z = 0)
         {
             try
             {
-                var d = arr[i]!.GetValue<double>();
+                var d = CadJson.TryNumber(arr[i], out var n) ? n : throw new FormatException();
                 return double.IsFinite(d) ? d : throw new FormatException();
             }
             catch (Exception e) when (e is FormatException or InvalidOperationException or NullReferenceException)

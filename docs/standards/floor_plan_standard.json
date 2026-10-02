@@ -1,0 +1,655 @@
+{
+  "$comment": "Deterministic drafting standard for Korean residential floor plans (user khs0927). Every agent must read this file before drawing or fixing a plan and must not override a value here without the user's approval. Source of truth for values: the user's own left sheet in Drawing2 (verified 2026-09-29) and explicit user instructions.",
+  "version": "1.0.0",
+  "units": "mm",
+  "reference_drawing": {
+    "file": "Documents/Drawing2_powercad_backup.dwg",
+    "sample_sheet": "left sheet (ZIUM_sheet_architect at 3703,4292)",
+    "rule": "When a style is not covered here, cad_query the left sheet and copy it exactly (geometry AND layer). Never invent."
+  },
+  "layers_$comment": "User-approved layer standard (2026-09-29), 37 layers. 'color' is set only where the user confirmed an ACI number; 'color_name' where only a colour name was given (do not convert to ACI without asking); null = unconfirmed, ask the user or copy from the drawing. 'observed_drawing2' is what Drawing2 actually used - reference only, not the standard.",
+  "layers": {
+    "COL": {
+      "color": 2,
+      "color_name": "yellow",
+      "role": "structure: concrete/steel, columns"
+    },
+    "WAL1": {
+      "color": 7,
+      "color_name": "white",
+      "role": "LIGHT partition wall (경량벽체)"
+    },
+    "WAL2": {
+      "color": 3,
+      "color_name": "green",
+      "role": "MASONRY wall (조적벽체)"
+    },
+    "WAL3": {
+      "color": null,
+      "role": "other non-structural wall"
+    },
+    "ELE": {
+      "color": 8,
+      "role": "elevation/level lines, base"
+    },
+    "ELE1": {
+      "color": 251,
+      "role": "elevation series 1"
+    },
+    "ELE2": {
+      "color": 252,
+      "role": "elevation series 2"
+    },
+    "ELE3": {
+      "color": 253,
+      "role": "elevation series 3"
+    },
+    "ELE4": {
+      "color": 254,
+      "role": "elevation series 4"
+    },
+    "DOOR": {
+      "color": null,
+      "role": "doors",
+      "observed_drawing2": 4
+    },
+    "DOOR_ELE": {
+      "color": null,
+      "role": "door elevation lines",
+      "observed_drawing2": 8
+    },
+    "WIN": {
+      "color": null,
+      "role": "windows (glass)",
+      "observed_drawing2": 4
+    },
+    "WINBAR": {
+      "color": null,
+      "role": "window bars/frames",
+      "observed_drawing2": 4
+    },
+    "WINELE": {
+      "color": null,
+      "role": "window elevation lines",
+      "observed_drawing2": 8
+    },
+    "STAIR": {
+      "color": null,
+      "role": "stairs"
+    },
+    "DIM": {
+      "color": null,
+      "role": "dimensions",
+      "observed_drawing2": 7
+    },
+    "DIMLE": {
+      "color": null,
+      "role": "dimension leaders"
+    },
+    "CEN": {
+      "color": null,
+      "role": "MAIN column centre lines",
+      "observed_drawing2": 1
+    },
+    "CEN1": {
+      "color": null,
+      "role": "light partition centre lines"
+    },
+    "CEN2": {
+      "color": null,
+      "role": "other centre lines"
+    },
+    "DEFPOINTS": {
+      "color": null,
+      "role": "guides / non-plot reference points"
+    },
+    "FIX": {
+      "color": null,
+      "role": "fixed furniture/fixtures",
+      "observed_drawing2": 154
+    },
+    "FUR": {
+      "color": null,
+      "role": "furniture"
+    },
+    "SYM": {
+      "color": null,
+      "role": "symbols"
+    },
+    "SYM_T": {
+      "color": null,
+      "role": "symbol text"
+    },
+    "TIT": {
+      "color": null,
+      "role": "titles"
+    },
+    "AREA": {
+      "color": 6,
+      "linetype": "PHANTOM2",
+      "lineweight": 0.2,
+      "role": "site boundary / cadastral line / area (from 구역계)"
+    },
+    "PARKING": {
+      "color": null,
+      "role": "parking"
+    },
+    "INS": {
+      "color": null,
+      "role": "insulation"
+    },
+    "BOUND": {
+      "color": null,
+      "role": "zone boundary"
+    },
+    "A-FORM": {
+      "color": null,
+      "role": "title block (sheet)",
+      "observed_drawing2": 93
+    },
+    "ETC": {
+      "color": 8,
+      "role": "misc, base"
+    },
+    "ETC1": {
+      "color": 251,
+      "role": "misc series 1"
+    },
+    "ETC2": {
+      "color": 252,
+      "role": "misc series 2"
+    },
+    "ETC3": {
+      "color": 253,
+      "role": "misc series 3"
+    },
+    "ETC4": {
+      "color": 254,
+      "role": "misc series 4"
+    },
+    "MARK": {
+      "color": null,
+      "role": "shared marks"
+    },
+    "FIN": {
+      "color": 5,
+      "role": "finish lines (added 2026-09-29 from ZIUM site plan)"
+    },
+    "HAT": {
+      "color": 5,
+      "role": "all hatches (added; resolves wall hatch layer)"
+    },
+    "실명": {
+      "color": 7,
+      "role": "room names / use labels (added)"
+    },
+    "TXT": {
+      "color": 3,
+      "role": "general notes, table text (added)"
+    },
+    "CEIL": {
+      "color": 5,
+      "linetype": "HIDDEN",
+      "role": "ceiling lines in sections (added)"
+    }
+  },
+  "layer_merge_map": {
+    "$comment": "Drawing layers -> standard layers (ZIUM 건축,구조1.dwg site plan). Keep entity colour overrides.",
+    "구역계": "AREA",
+    "콘크리트": "COL",
+    "마감선3": "FIN",
+    "E": "ELE",
+    "E1": "ELE1",
+    "COMM": "SYM",
+    "글자": "SYM_T",
+    "방위표": "SYM",
+    "STAIR-HR": "STAIR",
+    "문자-실명": "실명",
+    "문자": "TXT",
+    "문자-기타": "TXT",
+    "text": "TXT",
+    "Layer 1": "TXT",
+    "테두리": "A-FORM",
+    "01": "A-FORM",
+    "설비": "ETC",
+    "WID": "WIN",
+    "창호": "WIN",
+    "WIN-창문살": "WINBAR",
+    "WIN_C": "WINELE",
+    "CEN_ELEV": "SYM",
+    "ELEV1": "SYM",
+    "A-TAG": "SYM",
+    "CENTER": "CEN2",
+    "치수선": "DIMLE",
+    "DLINE": "DIMLE",
+    "1HAT": "HAT",
+    "G": "HAT",
+    "STL": "ELE2",
+    "000": "ETC",
+    "2": "ETC",
+    "6": "ETC",
+    "S-COL": "MARK",
+    "AA-SECT-PCN8": "SYM",
+    "S-WALL": "COL",
+    "A-레벨": "SYM_T",
+    "AS-CEIL": "CEIL",
+    "CH": "CEIL",
+    "FINISH": "FIN",
+    "마감선2": "FIN",
+    "FIN-1": "FIN",
+    "FIN3-텍스": "FIN",
+    "외형선": "FIN",
+    "A-외장재": "ELE2",
+    "A-외장재_하지": "ELE2",
+    "FIN-루버": "ELE2",
+    "-0.로코파이프": "ELE2",
+    "FIXING SCREW": "ELE2",
+    "STUD": "WAL1",
+    "WALL-칸막이 벽체": "WAL1",
+    "WAL": "WAL3",
+    "W-방화셔터": "DOOR",
+    "W3": "WIN",
+    "HID": "ETC",
+    "ELEV": "FIX",
+    "ELEV2": "FIX",
+    "H2": "FIX",
+    "HATCH": "INS for insulation symbols (wave/zigzag polylines), HAT for HATCH entities",
+    ".": "HAT",
+    "BACK": "ETC",
+    "TEX": "SYM",
+    "STAIR-SYM": "SYM_T",
+    "DOR": "DOOR",
+    "FIX-CUBICLE": "FIX",
+    "H1": "FIX",
+    "@CAR": "PARKING",
+    "점자블럭": "SYM",
+    "SL": "ETC",
+    "etc": "ETC",
+    "CADPOWER": "ETC",
+    "CNTLINE": "CEN2",
+    "0-AC-DIM-OUT": "DIM",
+    "0-AC-DIM-IN": "DIM",
+    "0-AC-LEAD-TEXT": "TXT",
+    "A-글자": "TXT",
+    "A-FIN": "FIN",
+    "A-INS": "INS",
+    "A-HAT": "HAT",
+    "DIM1": "DIM",
+    "중앙선": "CEN2",
+    "H": "DIM for DIMENSION entities, otherwise FIX (same family as H1/H2)",
+    "$rule": "By content, not by source layer: every insulation symbol -> INS, every HATCH entity -> HAT, every DIMENSION entity -> DIM (plan sheets put 80-세부치수 dims on HATCH/H/CEN/INS/STAIR)."
+  },
+  "legacy_layers_drawing2": {
+    "$comment": "Used in Drawing2 but NOT in the standard list. Do not create them in new work; ask the user how to map existing entities.",
+    "CON": {
+      "color": 2,
+      "role": "exterior concrete wall outline (likely maps to COL)"
+    },
+    "HAT2": {
+      "color": 252,
+      "role": "wall hatch"
+    },
+    "@실명": {
+      "color": 7,
+      "role": "room name (h300) + area (h180)"
+    }
+  },
+  "walls": {
+    "exterior_thickness": 200,
+    "interior_thickness": 100,
+    "segmenting": "one CLOSED polyline per wall run between openings; openings always break the wall",
+    "junctions": "corners and T-junctions of the SAME material are one polygon (L/U/T shape); no seam line across the wall thickness and no empty square at the corner",
+    "material_boundary": "keep the joint line where CON meets WAL1 (different materials)",
+    "masonry": {
+      "layer": "WAL2",
+      "color": 3,
+      "hatch": {
+        "pattern": "ANSI31",
+        "layer": "HAT"
+      }
+    },
+    "light_partition": {
+      "layer": "WAL1",
+      "color": 7,
+      "hatch": null,
+      "centre_line_layer": "CEN1"
+    },
+    "classification": "masonry vs light is a DESIGN decision: ask the user per wall when not given. Never guess.",
+    "exterior_build_up": "structure (COL double line + grey SOLID fill) -> insulation band with repeated wave curve (INS) -> cladding face line (FIN); cladding type named by leader text"
+  },
+  "centre_lines": {
+    "layer": "CEN",
+    "extend_past_wall_end": 400,
+    "outer_end": "runs out to the first dimension guide line (plan edge + 1500)",
+    "must_not_cross": "rooms that the wall does not bound (e.g. a lower-room wall line must stop 400 past the corridor-side face, not run through the upper bathroom/kitchen)"
+  },
+  "dimensions": {
+    "style": "80",
+    "layer": "DIM",
+    "type": "rotated",
+    "measured_in_house_plan": {
+      "exterior_wall_centre_lines": {
+        "bottom_y": 10000,
+        "top_y": 18400
+      },
+      "top": {
+        "extension_origin_y": 19900,
+        "room_row_y": 21900,
+        "overall_row_y": 22900
+      },
+      "bottom": {
+        "extension_origin_y": 8500,
+        "room_row_y": 7500,
+        "overall_row_y": 6500
+      },
+      "guide_rectangles_DEFPOINTS": "B7F (8500..19900), B80 (7500..20900), B81 (6500..21900)",
+      "user_instruction": "top room row sits on the upper guide line, next to the overall row (2026-09-29)"
+    },
+    "rule": "every row has its own guide line; a row whose centre lines were removed is deleted, not left floating",
+    "sides": [
+      "top",
+      "bottom",
+      "left",
+      "right"
+    ]
+  },
+  "sliding_window": {
+    "name": "미서기창 (2 sashes)",
+    "source_handles": "left sheet 847..859",
+    "wall_thickness": 200,
+    "frame_depth": 125,
+    "frame_offset_o": 37.5,
+    "orientation": "y=0 is the EXTERIOR face; for a wall whose exterior is +Y, mirror y -> 200 - y",
+    "parts": [
+      {
+        "part": "wall face lines",
+        "layer": "ELE",
+        "lines": [
+          [
+            [
+              0,
+              0
+            ],
+            [
+              "W",
+              0
+            ]
+          ],
+          [
+            [
+              0,
+              200
+            ],
+            [
+              "W",
+              200
+            ]
+          ]
+        ]
+      },
+      {
+        "part": "left jamb",
+        "layer": "WINBAR",
+        "closed_polyline": [
+          [
+            0,
+            "o"
+          ],
+          [
+            0,
+            "125+o"
+          ],
+          [
+            44,
+            "125+o"
+          ],
+          [
+            44,
+            "119.5+o"
+          ],
+          [
+            23,
+            "119.5+o"
+          ],
+          [
+            25,
+            "6+o"
+          ],
+          [
+            53,
+            "6+o"
+          ],
+          [
+            53,
+            "o"
+          ]
+        ]
+      },
+      {
+        "part": "right jamb",
+        "layer": "WINBAR",
+        "rule": "left jamb mirrored x -> W - x"
+      },
+      {
+        "part": "frame faces",
+        "layer": "WINELE",
+        "lines": [
+          [
+            [
+              53,
+              "o"
+            ],
+            [
+              "W-53",
+              "o"
+            ]
+          ],
+          [
+            [
+              44,
+              "125+o"
+            ],
+            [
+              "W-44",
+              "125+o"
+            ]
+          ]
+        ]
+      },
+      {
+        "part": "exterior sash frame",
+        "layer": "WINELE",
+        "x": [
+          "m+40",
+          "W-111"
+        ],
+        "y": [
+          "11+o",
+          "53+o"
+        ]
+      },
+      {
+        "part": "exterior sash glass",
+        "layer": "WIN",
+        "x": [
+          "m+40",
+          "W-111"
+        ],
+        "y": [
+          "19.5+o",
+          "35.5+o"
+        ]
+      },
+      {
+        "part": "exterior sash stile",
+        "layer": "WINBAR",
+        "rect": [
+          [
+            "W-111",
+            "11+o"
+          ],
+          [
+            "W-38",
+            "53+o"
+          ]
+        ]
+      },
+      {
+        "part": "interior sash frame",
+        "layer": "WINELE",
+        "x": [
+          111,
+          "m-40"
+        ],
+        "y": [
+          "66+o",
+          "108+o"
+        ]
+      },
+      {
+        "part": "interior sash glass",
+        "layer": "WIN",
+        "x": [
+          111,
+          "m-40"
+        ],
+        "y": [
+          "74.5+o",
+          "90.5+o"
+        ]
+      },
+      {
+        "part": "interior sash stile",
+        "layer": "WINBAR",
+        "rect": [
+          [
+            38,
+            "66+o"
+          ],
+          [
+            111,
+            "108+o"
+          ]
+        ]
+      },
+      {
+        "part": "meeting stile (exterior)",
+        "layer": "WINBAR",
+        "closed_polyline": [
+          [
+            "m+40",
+            "11+o"
+          ],
+          [
+            "m+40",
+            "53+o"
+          ],
+          [
+            "m-5",
+            "53+o"
+          ],
+          [
+            "m-5",
+            "63+o"
+          ],
+          [
+            "m-40",
+            "63+o"
+          ],
+          [
+            "m-40",
+            "11+o"
+          ]
+        ]
+      },
+      {
+        "part": "meeting stile (interior)",
+        "layer": "WINBAR",
+        "closed_polyline": [
+          [
+            "m-40",
+            "108+o"
+          ],
+          [
+            "m-40",
+            "66+o"
+          ],
+          [
+            "m+5",
+            "66+o"
+          ],
+          [
+            "m+5",
+            "56+o"
+          ],
+          [
+            "m+40",
+            "56+o"
+          ],
+          [
+            "m+40",
+            "108+o"
+          ]
+        ]
+      },
+      {
+        "part": "centre mark",
+        "layer": "WINELE",
+        "lines": [
+          [
+            [
+              "m",
+              -103
+            ],
+            [
+              "m",
+              297
+            ]
+          ]
+        ]
+      }
+    ],
+    "variables": {
+      "W": "opening width (wall end to wall end)",
+      "m": "W/2",
+      "o": 37.5
+    },
+    "entity_count": 17
+  },
+  "sheet": {
+    "block": "ZIUM_sheet_architect",
+    "native_size": [
+      84000,
+      59400
+    ],
+    "scale_formula": "Always judge scale on A3 from the sheet block scale: A3 denominator = block_scale * 200 (0.5 -> 1/100, 0.75 -> 1/150). The block scale wins over any scale text.",
+    "drawing_area_native": [
+      [
+        4000,
+        2000
+      ],
+      [
+        74499,
+        56400
+      ]
+    ],
+    "scale_texts": [
+      "'1 / N' in title column",
+      "'SCALE _ A1 1 / N/2 , A3 1 / N' under drawing title"
+    ],
+    "rule": "dimension style is NOT tied to the sheet scale: choose/adjust it per drawing from the size of the objects being dimensioned so text and arrows stay legible (user rule 2026-09-29). A DIMSCALE different from the sheet scale is not a defect."
+  },
+  "procedure": [
+    "cad_status: check commands include delete/transform/snapshot (plugin >= 0.3.0)",
+    "cad_query the reference sheet for any style you are about to draw",
+    "build all edits as one cad_batch with expect_fingerprint on every target",
+    "run with dry_run:true, then apply",
+    "cad_snapshot the result next to the reference sheet and compare visually",
+    "ask the user to save (the plugin never saves)"
+  ],
+  "open_questions": [
+    "Which interior walls are masonry and which are light partitions (per wall).",
+    "Colours of all layers with color null."
+  ],
+  "principle": "Record FORM, not sizes: dimensions change with design; the guide must let an agent reproduce the shape."
+}

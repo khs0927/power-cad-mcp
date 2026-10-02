@@ -39,7 +39,7 @@ public sealed class Params(JsonObject? node)
             return null;
         }
 
-        return n is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d)
+        return CadJson.TryNumber(n, out var d) && double.IsFinite(d)
             ? d
             : throw CadException.Invalid($"'{name}' must be a finite number.");
     }

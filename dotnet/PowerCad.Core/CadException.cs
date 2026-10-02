@@ -6,6 +6,9 @@ public static class ErrorCodes
     public const string InvalidParams = "INVALID_PARAMS";
     public const string UnknownCommand = "UNKNOWN_COMMAND";
     public const string NotFound = "NOT_FOUND";
+    public const string DocumentChanged = "DOCUMENT_CHANGED";
+    public const string DocumentUnbound = "DOCUMENT_UNBOUND";
+    public const string TargetAmbiguous = "TARGET_AMBIGUOUS";
     public const string StaleTarget = "STALE_TARGET";
     public const string LockedLayer = "LOCKED_LAYER";
     public const string Unsupported = "UNSUPPORTED";
@@ -18,6 +21,7 @@ public static class ErrorCodes
     public const string NotConnected = "NOT_CONNECTED";
     public const string ReadOnly = "READ_ONLY";
     public const string Internal = "INTERNAL";
+    public const string PluginOutdated = "PLUGIN_OUTDATED";
 }
 
 /// <summary>An anticipated failure with a machine-readable code and a hint for the agent's next step.</summary>
