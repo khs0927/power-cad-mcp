@@ -46,7 +46,7 @@ AI 에이전트(Claude 등)가 `power-cad` MCP 서버로 실제 도면을 다룰
 | `NOT_CONNECTED` / `UNAUTHORIZED` | 플러그인 재시작 등 | `cad_status`로 재연결 |
 | `UNSUPPORTED` | 대상 유형 불일치 | 올바른 유형(TEXT/MTEXT, INSERT) 대상을 다시 찾기 |
 
-실수로 적용된 변경은 AutoCAD에서 `UNDO`(Ctrl+Z)로 되돌릴 수 있다. 요청 하나는 되돌리기 한 단계에 해당한다.
+실수로 적용된 변경은 AutoCAD에서 `UNDO`(Ctrl+Z)로 되돌릴 수 있다. 요청 하나는 되돌리기 한 단계(`POWERCAD_EDIT`)에 해당한다. 실도면 인수 시험(7절)에서 한 번 확인한다.
 
 ## 6. 결과 보고
 사용자에게 다음을 짧게 보고한다.

@@ -51,16 +51,32 @@ python -m power_cad_mcp.census 건축,구조1.dxf --standard docs/standards/floo
 ## 5. 인벤토리 보관·다른 PC에서 불러오기
 census 결과는 실제 프로젝트 문자를 담고 있어 **저장소(공개)에 올리지 않고** 구글 드라이브에 둔다. 저장소의 `census/`는 .gitignore 대상이다.
 
-- 보관 위치: `G:\내 드라이브\PowerCad\census\<도면>_census\` (Google Drive for desktop, `내 드라이브`)
-  - 예: `건축,구조1_census\` = `census.md`, `census.json`, `CHECKLIST.md`(칸 닫기 결과), `test_sheet_T201_handles.json`(시험 시트 핸들)
-- 새 census를 만들면 같은 폴더 이름으로 드라이브에 복사한다(덮어쓰기 전 이전 것을 `_YYYYMMDD`로 남긴다).
+- 보관 위치: `<드라이브>:\내 드라이브\PowerCad\census\<도면>_census\` (Google Drive for desktop, `내 드라이브`). 아래 예시는 `G:`로 쓰지만 PC마다 문자가 다를 수 있다.
+  - 예: `건축,구조1_census\`
+
+    | 파일 | 만드는 방법 |
+    | --- | --- |
+    | `census.md`, `census.json` | 1절 명령(또는 `drawing_census`)이 자동으로 만든다 |
+    | `CHECKLIST.md` | 2절 칸 닫기 체크리스트를 복사해 항목마다 확인 결과를 손으로 적는다 |
+    | `test_sheet_T201_handles.json` | 시험 시트를 그린 뒤 생성된 객체 핸들을 저장한 것(작도 결과에서 손으로 저장) |
+
+- 새 census를 만들면 같은 폴더 이름으로 드라이브에 복사한다. 덮어쓰기 전에 이전 것을 날짜를 붙여 남긴다:
+  ```powershell
+  $d = "G:\내 드라이브\PowerCad\census\건축,구조1_census"
+  if (Test-Path $d) { Rename-Item $d ("{0}_{1}" -f (Split-Path $d -Leaf), (Get-Date -Format yyyyMMdd)) }
+  Copy-Item -Recurse census\건축구조1 $d
+  ```
 
 다른 PC에서:
-1. Google Drive for desktop을 설치하고 같은 계정으로 로그인한다(드라이브 문자는 PC마다 다를 수 있다 — 탐색기에서 `내 드라이브` 경로 확인).
-2. 저장소를 클론한 뒤 드라이브 폴더를 저장소 `census\`로 연결한다(복사하지 않고 링크하면 항상 최신):
+1. Google Drive for desktop을 설치하고 같은 계정으로 로그인한다. 탐색기에서 `내 드라이브`의 실제 드라이브 문자를 확인한다.
+2. 저장소를 클론한 뒤 드라이브 폴더를 저장소 `census\`로 연결한다(복사하지 않고 링크하면 항상 최신). 저장소 루트에서:
    ```powershell
-   New-Item -ItemType Junction -Path census -Target "G:\내 드라이브\PowerCad\census"
+   $drive = "G:\내 드라이브\PowerCad\census"   # 1에서 확인한 문자로 바꾼다
+   if (Test-Path census) { Rename-Item census census_local }   # 1절을 이미 돌린 PC면 기존 폴더를 비켜 둔다
+   New-Item -ItemType Junction -Path census -Target $drive
    ```
-   링크가 안 되면 폴더를 `census\`로 복사해도 된다(읽기 전용 참고용).
-3. 확인: `census\건축,구조1_census\census.md` 머리의 `완전성: 통과`(누락 0)인지 본다. 도면(DWG)이 바뀌었으면 1절 명령으로 다시 돌려 차이를 본다.
-4. 블록 자산(`문서\PowerCad\blocks`)도 다른 PC에서 쓰려면 같은 방식으로 드라이브 `PowerCad\blocks`에 두고 `문서\PowerCad\blocks`를 그 폴더로 연결한다.
+   - 정션이 만들어지지 않으면(가상 드라이브를 대상으로 거부하는 경우) 심볼릭 링크를 쓴다. 관리자 권한 또는 개발자 모드가 필요하다:
+     `cmd /c mklink /D census "G:\내 드라이브\PowerCad\census"`
+   - 둘 다 안 되면 폴더를 `census\`로 복사해도 된다(읽기 전용 참고용, 최신 여부는 직접 챙긴다).
+3. 확인: `census\건축,구조1_census\census.md` 머리의 `완전성: 통과`(누락 0)인지 본다. 도면(DWG)이 바뀌었으면 1절 명령으로 다시 돌려 차이를 본다(새 결과는 링크된 `census\` 밖의 폴더로 내고, 위 백업 절차로 드라이브에 올린다).
+4. 블록 자산(`문서\PowerCad\blocks`)도 다른 PC에서 쓰려면 같은 방식으로 드라이브 `PowerCad\blocks`에 두고 `문서\PowerCad\blocks`를 그 폴더로 연결한다(기존 폴더가 있으면 먼저 비켜 둔다).

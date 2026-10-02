@@ -1,0 +1,30 @@
+{
+  "$comment": "Building spec for scripts/zium_plan_builder.py. Coordinates are sheet-local (sheet origin = where ZIUM_sheet_architect x0.4 is inserted). This one reproduces the 2026-09-30 test plan placed next to the rooftop plan in 건축,구조1.dwg.",
+  "sheet_origin": [548827.7, 327230.0],
+  "use_standard_layers": false,
+  "title": "시험 평면도",
+  "number": "T201",
+  "date": "2026. 09",
+  "grid": {"x": [8099.9, 12399.9, 18549.9, 22199.9], "y": [7338.3, 13338.3]},
+  "bands": {"S": "road_face_ground_floor"},
+  "openings": [
+    {"side": "S", "from": 9200, "to": 11600, "kind": "window"},
+    {"side": "S", "from": 14500, "to": 16300, "kind": "entrance"},
+    {"side": "S", "from": 19400, "to": 21400, "kind": "window"},
+    {"side": "N", "from": 14000, "to": 16800, "kind": "window"},
+    {"side": "W", "from": 9200, "to": 11400, "kind": "window"},
+    {"side": "E", "from": 9500, "to": 11500, "kind": "window"}
+  ],
+  "partitions": [{"x": 18549.9, "door": {"at": 10000}}],
+  "rooms": [
+    {"at": [13324.9, 10320], "legal": "제2종근린생활시설", "use": "사무소"},
+    {"at": [20374.9, 10320], "legal": "제1종근린생활시설", "use": "휴게음식점"}
+  ],
+  "boxed_names": [{"text": "8M 도로", "at": [15400, 5560]}, {"text": "50M 도로", "at": [25700, 10300]}],
+  "entrance": {"text_at": [15400, 6300], "braille_at": [14950, 6650]},
+  "site_margin": [600, 900, 600, 700],
+  "leaders": [
+    {"points": [[12000, 7183.3], [12000, 6780], [12600, 6780]], "lines": ["T-120 비드법보온판(0.037) 2종1호 위", "STO 외단열 시스템-스탠다드K2.0(스토로투산-지정컬러)"]},
+    {"points": [[7964.9, 12300], [7300, 12300], [6700, 12300]], "lines": ["T-70 PF보드(0.020)위", "STO 외단열 시스템-스탠다드K2.0"]}
+  ]
+}
