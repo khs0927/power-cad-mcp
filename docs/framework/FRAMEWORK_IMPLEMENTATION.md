@@ -63,9 +63,20 @@ layer edits, imports and saves are deliberately outside this first plan schema.
 ## State, bounds and recovery
 
 - Captured snapshots expire after ten minutes or eviction; at most 16 are retained.
-- At most 1000 entities and a bounded serialized payload are returned. Scanning
-  still visits the whole model space to count and hash it; this is not a streaming
-  large-drawing extractor or a full-database hash.
+- At most 1000 entities and a bounded serialized payload are returned.
+  `max_scanned_entities` separately limits described model-space entities (default
+  10000, range 1–100000). At the limit, `scan_complete=false`, `total_count=null`
+  and `truncated=true`; even exactly that many entities are conservatively marked
+  incomplete because the iterator is not advanced to inspect another object.
+- `raw_count`, `processed_count`, type counts and unsupported counts describe the
+  scanned prefix when `counts_scope=scanned_top_level_prefix`. `content_hash_scope`
+  states whether the hash covers the prefix or all top-level entities plus layers.
+  Neither is a full-database hash. Review and plan receipts retain these scopes.
+- The entity limit bounds iterator advances, not wall-clock time: describing one
+  complex entity, collecting layer metadata or acquiring a document lock can still
+  take time. Frozen paging cannot resume a scan beyond its captured prefix.
+  Raise the explicit scan limit for a larger capture; partial reviews do not prove
+  absence of defects elsewhere in the drawing.
 - Layer metadata is also bounded. `resources_truncated` reports omissions.
 - Layouts, block definitions, nested instances and XREF contents are excluded from
   native snapshots; `cad_inventory` lists them separately. Unsupported DTOs may only
@@ -120,7 +131,8 @@ This is a startup limitation with an undetermined cause, not successful native
 acceptance. The installed preview bundle still requires the live gate above.
 
 - Canonical source/revision tickets and source-to-native-object resolution.
-- Bounded scanning latency (inventory and snapshots still visit every entity to count it).
+- Bounded inventory scanning and wall-clock latency; inventory still counts every
+  entity, while snapshots now stop at an explicit entity scan limit.
 - Wall topology, opening-host relationships, dimensions and unit/coordinate tests
   on representative real drawings; open polylines are not automatically defects.
 - Capability-derived semantic action choices beyond the current four operations.

@@ -9,8 +9,9 @@ public sealed partial class CommandDispatcher
 {
     private JsonObject ExtractSnapshot(ICadTransaction tx, Params p)
     {
-        p.AllowOnly("max_entities");
+        p.AllowOnly("max_entities", "max_scanned_entities");
         var max = p.Int("max_entities", 1000, 1, 1000);
+        var scanLimit = p.Int("max_scanned_entities", 10000, 1, 100000);
         var entities = new JsonArray();
         var counts = new JsonObject();
         var unsupported = new JsonObject();
@@ -19,6 +20,7 @@ public sealed partial class CommandDispatcher
         var raw = 0;
         var budget = new PayloadBudget();
         var truncated = false;
+        var scanComplete = true;
         foreach (var entity in tx.ScanModelSpace())
         {
             raw++;
@@ -33,6 +35,14 @@ public sealed partial class CommandDispatcher
                 entities.Add(json);
             }
             else truncated = true;
+            if (raw >= scanLimit)
+            {
+                // Do not advance the iterator again: native MoveNext describes another entity.
+                // At exactly the limit completion is conservatively unknown.
+                scanComplete = false;
+                truncated = true;
+                break;
+            }
         }
 
         var identity = document.Describe();
@@ -50,6 +60,13 @@ public sealed partial class CommandDispatcher
             ["session_id"] = identity["session_id"]?.DeepClone(),
             ["units"] = identity["units"]?.DeepClone(),
             ["content_hash"] = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(),
+            ["content_hash_scope"] = scanComplete ? "all_top_level_entities_and_layers" : "scanned_top_level_prefix_and_layers",
+            ["scan_complete"] = scanComplete,
+            ["scan_limit"] = scanLimit,
+            ["scan_stop_reason"] = scanComplete ? "end_of_model_space" : "entity_limit",
+            ["counts_scope"] = scanComplete ? "all_top_level_entities" : "scanned_top_level_prefix",
+            ["total_count_known"] = scanComplete,
+            ["total_count"] = scanComplete ? raw : (int?)null,
             ["scope"] = "model_space_top_level",
             ["excluded_scopes"] = new JsonArray("paper_space", "block_definitions", "nested_instances", "xref_contents"),
             ["raw_count"] = raw,
