@@ -1,0 +1,75 @@
+{
+  "$comment": "ZIUM 1/80 floor-plan sheet, measured from 건축,구조1.dwg sheet S16 (1층 평면도) on 2026-09-30. All positions are SHEET-LOCAL model mm (sheet block ZIUM_sheet_architect inserted at the origin with scale 0.4). Layer names are the source drawing's own layers; 'standard_layer' gives the floor_plan_standard.json layer for drawings that use the standard set. Used by scripts/zium_plan_builder.py.",
+  "version": "1.0.0",
+  "source": {"drawing": "건축,구조1.dwg", "sheet": "S16 1층 평면도", "census": "census/건축,구조1_census (local only)"},
+  "sheet": {"block": "ZIUM_sheet_architect", "scale": 0.4, "size": [33600, 23760], "layer": "A-FORM", "row_pitch": 33600},
+  "plan_boundary": [6549.9, 5030.0, 24849.9, 18330.0],
+  "guides": {"layer": "DEFPOINTS", "offsets": [0, 1500, 1900, 2300, 2700, 3100, 3500]},
+  "grid": {
+    "line_layer": "CEN", "lines_span": "plan_boundary",
+    "bubble": {"block": "BUBBLE", "scale": 36, "layer": "COMM", "standard_layer": "SYM",
+               "top_y": 21330, "left_x": 3049.9, "top_rotation": 0, "left_rotation": 90, "label_offset": 392,
+               "label": {"layer": "글자", "standard_layer": "SYM_T", "height": 144}}
+  },
+  "dimensions": {
+    "style": "80", "layer": "DIM",
+    "rows": {"bottom": {"detail": 3230, "grid": 2830, "overall": 2430},
+             "top": {"detail": 19730, "grid": 20130, "subtotal": 20530, "overall": 20930},
+             "left": {"grid": 3850, "overall": 3450},
+             "right": {"detail": 27550, "overall": 27950}},
+    "detail_style_inside": "80-세부치수"
+  },
+  "title": {
+    "layer": "TIT", "circle": {"center": [24790, 2030], "radius": 512},
+    "rule_line": [[24022, 2030], [29307.4, 2030]],
+    "number_top": {"position": [24774, 2231], "height": 165.12, "justify": "middle", "text": "1"},
+    "number_bottom": {"position": [24783.6, 1802.9], "height": 165.12, "justify": "middle"},
+    "name": {"position": [26038.1, 2080], "height": 384},
+    "scale_text": {"position": [26507.4, 1780], "height": 128, "format": "SCALE _ A1 1 / 40 , A3 1 / 80"}
+  },
+  "title_column": {
+    "layer": "Layer 1", "standard_layer": "TXT",
+    "name": {"position": [30667.3, 3560], "height": 200},
+    "date": {"position": [31767.3, 1660], "height": 154},
+    "scale": {"position": [31917.9, 2100], "height": 154, "text": "1 / 80"},
+    "number": {"position": [30976.6, 1090], "height": 200}
+  },
+  "north_arrow": {"layer": "방위표", "standard_layer": "SYM", "center": [3561.2, 21216.2], "radius": 579.45, "fill_color": 253},
+  "text_style": "나눔스퀘어",
+  "walls": {
+    "exterior_thickness": 200, "placement": "centred on grid",
+    "layer": "COL", "standard_layer": "COL",
+    "fill": {"layer": ".", "standard_layer": "HAT", "pattern": "SOLID", "color": 253, "rule": "one SOLID per concrete mass (walls + columns merged, openings removed)"},
+    "column": {"size": [500, 700], "rule": "outer faces flush with the wall exterior faces"},
+    "partition": {"layer": "WAL", "standard_layer": "WAL1", "thickness": 100}
+  },
+  "insulation": {
+    "layer": "INS", "finish_layer": "FIN",
+    "motif": {"$comment": "one period, (d outward from structure face, s along the wall, bulge to next vertex) for the 70 band; scale d by band/70 and s by period/42", "vertices": [[70, 0, 0.502], [50, 14.9, 0], [20.1, 6, -0.502], [0, 21, -0.502], [20.1, 35.9, 0], [50, 27, 0.502]], "period": 42, "band": 70},
+    "bands": {"road_face_ground_floor": {"band": 110, "period": 66, "note": "T-120 비드법보온판(0.037) 2종1호 위 / STO 외단열 시스템-스탠다드K2.0(스토로투산-지정컬러)"},
+              "default": {"band": 70, "period": 42, "note": "T-70 PF보드(0.020)위 / STO 외단열 시스템-스탠다드K2.0"}},
+    "rule": "one run per exterior piece between openings, turning corners; FIN line on the outer face and short FIN lines closing the band at opening ends and corners. Bulge polylines are written as sampled arcs when the tool cannot create bulges."
+  },
+  "window": {
+    "$comment": "d measured outward from the structure face (+ = outside), s along the wall; W = opening width",
+    "sill_lines": {"layer": "ELE1", "standard_layer": "ELE1", "d": ["band", -200]},
+    "frame_ends": {"layer": "WID", "standard_layer": "WIN", "along": 50, "d": [19.5, -130.5]},
+    "frame_lines": {"layer": "WID", "standard_layer": "WIN", "d": [19.5, -10.5], "inset": 50},
+    "glass_lines": {"layer": "WIN-창문살", "standard_layer": "WINBAR", "d": [4.5, -130.5], "inset": 50}
+  },
+  "door": {
+    "room_door_block": {"name": "A$C35A9598C", "library_name": "ZIUM_여닫이문", "layer": "DOR", "standard_layer": "DOOR", "width": 580,
+                        "local": "opening along block x 100..680, wall face at block y 448, swing toward block y 35"},
+    "entrance": {"frame_ends": {"layer": "WID", "standard_layer": "WIN", "along": 150, "d": [19.5, -130.5]},
+                 "leaves": {"layer": "DOOR", "color": 8, "thickness": 30, "d": [-40, -80], "overlap": 50}}
+  },
+  "annotation": {
+    "legal_use": {"layer": "문자-실명", "standard_layer": "실명", "height": 166.67, "lines": 2, "line_gap": 360, "box": false},
+    "boxed_name": {"layer": "실명", "height": 224, "box": [1600, 500]},
+    "entrance": {"layer": "문자-실명", "standard_layer": "실명", "height": 220, "text": "주출입구"},
+    "braille": {"block": "점자블럭", "layer": "점자블럭", "standard_layer": "SYM", "tile": 300, "count": 3, "block_origin_offset": [3596.237769, 16445.691416]},
+    "site_boundary": {"layer": "구역계", "standard_layer": "AREA"},
+    "leader": {"type": "LEADER", "layer": "DIM", "arrow": "_DOT", "dimstyle": "80",
+               "text": {"layer": "문자-실명", "standard_layer": "실명", "height": 140, "dx": 57, "line1_dy": -11, "line2_dy": -217}}
+  }
+}
