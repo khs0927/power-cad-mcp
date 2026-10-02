@@ -130,6 +130,11 @@ public sealed class NewCommandTests
         Assert.Equal("none", plain["arrow"]!.GetValue<string>());
 
         Fails("create", """{"entities":[{"type":"leader","points":[[0,0]]}]}""");
+
+        // a leader's style is a dimension style (arrow size), not a text style
+        var styled = Created("""{"type":"leader","points":[[0,0],[800,0]],"style":"ISO-25"}""");
+        Assert.Equal("ISO-25", styled["style"]!.GetValue<string>());
+        Assert.Contains("Dimension style", Fails("create", """{"entities":[{"type":"leader","points":[[0,0],[800,0]],"style":"NOPE"}]}""").Message);
     }
 
     [Fact]

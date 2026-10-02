@@ -694,7 +694,7 @@ public sealed partial class CommandDispatcher(ICadDocument document, DispatcherO
 
             if (spec.Style is { } style)
             {
-                var kind = spec.Type == EntityTypes.Dimension ? "dim_style" : "text_style";
+                var kind = spec.Type is EntityTypes.Dimension or EntityTypes.Leader ? "dim_style" : "text_style";
                 if (!s.Tx.ResourceExists(kind, style))
                 {
                     throw new CadException(ErrorCodes.NotFound, $"{(kind == "dim_style" ? "Dimension" : "Text")} style '{style}' does not exist.", "Call cad_inspect to list styles.");
