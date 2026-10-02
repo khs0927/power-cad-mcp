@@ -1,5 +1,5 @@
 {
-  "reviewed_at": "2026-09-27",
+  "reviewed_at": "2026-10-02",
   "policy": "Patterns are re-implemented; no third-party source files are copied into this repository. Pins record exactly which revision was reviewed.",
   "sources": [
     {
@@ -25,6 +25,14 @@
       "license": "MIT",
       "role": "Drawing semantics and object-relationship analysis over COM (semantic graph, dimension binding, constraints).",
       "used_as": "separate MCP server connected alongside power-cad (uvx --from best-cad-mcp cad-mcp)"
+    },
+    {
+      "name": "bimwright/dwg-mcp",
+      "url": "https://github.com/bimwright/dwg-mcp",
+      "commit": "4d0f75646631186612af926944d7e33affc4757d",
+      "license": "Apache-2.0",
+      "role": "Same author and architecture as rvt-mcp, targeting AutoCAD 2022-2027 (.NET 10 add-in for 2027 over named pipes): text selection with spatial clustering, translation/rewrite with font and height handling, optional toolsets for annotation, blocks, dimensions and export.",
+      "used_as": "design reference only (not a dependency); its opt-in arbitrary C# execution tool (dwg_send_code) is deliberately not adopted"
     },
     {
       "name": "AutoCAD.NET",
