@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json.Nodes;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
@@ -9,7 +9,7 @@ using PowerCad.Core.Model;
 namespace PowerCad.Plugin;
 
 /// <summary>Maps the backend-neutral transaction contract onto one AutoCAD <see cref="Transaction"/>.</summary>
-internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransaction
+internal sealed partial class AcadTransaction(Database db, Transaction tr) : ICadTransaction
 {
     private const double Deg = 180.0 / Math.PI;
 
@@ -90,6 +90,13 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
                 props["points"] = new JsonArray(Enumerable.Range(0, pl.NumberOfVertices)
                     .Select(i => (JsonNode)P(pl.GetPoint3dAt(i))).ToArray());
                 props["closed"] = pl.Closed;
+                if (Enumerable.Range(0, pl.NumberOfVertices).Any(i => Math.Abs(pl.GetBulgeAt(i)) > 1e-12))
+                {
+                    // arc segments: reported so measurements and offsets never treat them as straight
+                    props["bulges"] = new JsonArray(Enumerable.Range(0, pl.NumberOfVertices)
+                        .Select(i => (JsonNode)CadJson.Round(pl.GetBulgeAt(i))).ToArray());
+                }
+
                 break;
             case Arc a:
                 type = EntityTypes.Arc;
@@ -109,6 +116,18 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
                 props["position"] = P(t.Position);
                 props["height"] = CadJson.Round(t.Height);
                 props["rotation"] = CadJson.Round(t.Rotation * Deg);
+                props["style"] = SymbolName(t.TextStyleId);
+                if (TextJustifyName(t.Justify) is var j && j != "left")
+                {
+                    props["justify"] = j;
+                    props["alignment_point"] = P(t.AlignmentPoint);
+                }
+
+                if (Math.Abs(t.WidthFactor - 1) > 1e-9)
+                {
+                    props["width_factor"] = CadJson.Round(t.WidthFactor);
+                }
+
                 break;
             case MText m:
                 type = EntityTypes.MText;
@@ -116,10 +135,29 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
                 props["position"] = P(m.Location);
                 props["height"] = CadJson.Round(m.TextHeight);
                 props["width"] = CadJson.Round(m.Width);
+                props["rotation"] = CadJson.Round(m.Rotation * Deg);
+                props["style"] = SymbolName(m.TextStyleId);
+                if (MTextJustifyName(m.Attachment) is var mj && mj != "TL")
+                {
+                    props["justify"] = mj;
+                }
+
+                break;
+            case Dimension dim:
+                type = EntityTypes.Dimension;
+                DescribeDimension(dim, props);
+                break;
+            case Hatch h:
+                type = EntityTypes.Hatch;
+                DescribeHatch(h, props);
                 break;
             case BlockReference br:
                 type = EntityTypes.Insert;
                 DescribeInsert(br, props);
+                break;
+            case Leader ld:
+                type = EntityTypes.Leader;
+                DescribeLeader(ld, props);
                 break;
             case DBPoint pt:
                 type = EntityTypes.Point;
@@ -130,7 +168,8 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
                 break;
         }
 
-        if (ent.Bounds is { } b)
+        DescribeAppearance(ent, props);
+        if (SafeBounds(ent) is { } b)
         {
             props["bbox"] = new JsonArray(P(b.MinPoint), P(b.MaxPoint));
         }
@@ -308,6 +347,16 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
     public string Create(CreateSpec spec)
     {
         var ms = (BlockTableRecord)tr.GetObject(ModelSpaceId, OpenMode.ForWrite);
+        if (spec.Type == EntityTypes.Hatch)
+        {
+            return CreateHatch(ms, spec);
+        }
+
+        if (spec.Type == EntityTypes.Leader)
+        {
+            return CreateLeader(ms, spec);
+        }
+
         Entity ent = spec.Type switch
         {
             EntityTypes.Line => new Line(Pt(spec.A), Pt(spec.B)),
@@ -315,8 +364,10 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
             EntityTypes.Circle => new Circle(Pt(spec.A), Vector3d.ZAxis, spec.Radius),
             EntityTypes.Arc => new Arc(Pt(spec.A), spec.Radius, spec.StartAngle / Deg, spec.EndAngle / Deg),
             EntityTypes.Text => new DBText { TextString = spec.Text, Position = Pt(spec.A), Height = spec.Height, Rotation = spec.Rotation / Deg },
-            EntityTypes.MText => new MText { Contents = spec.Text, Location = Pt(spec.A), TextHeight = spec.Height, Width = spec.Width },
+            EntityTypes.MText => new MText { Contents = spec.Text, Location = Pt(spec.A), TextHeight = spec.Height, Width = spec.Width, Rotation = spec.Rotation / Deg },
             EntityTypes.Insert => MakeInsert(spec),
+            EntityTypes.Point => new DBPoint(Pt(spec.A)),
+            EntityTypes.Dimension => MakeDimension(spec),
             _ => throw new CadException(ErrorCodes.Unsupported, $"Cannot create {spec.Type}."),
         };
 
@@ -332,11 +383,53 @@ internal sealed class AcadTransaction(Database db, Transaction tr) : ICadTransac
             ent.Layer = l2; // SetDatabaseDefaults resets the layer to CLAYER
         }
 
+        ApplyAppearance(ent, spec.Appearance);
         ms.AppendEntity(ent);
         tr.AddNewlyCreatedDBObject(ent, true);
         if (ent is BlockReference br)
         {
             AddAttributes(br);
+        }
+
+        if (ent is Dimension dim)
+        {
+            // without this the dimension has no graphics (and TextPosition stays at the origin) until a regen
+            dim.RecomputeDimensionBlock(true);
+        }
+
+        switch (ent)
+        {
+            case DBText t:
+                if (spec.Style is { } ts)
+                {
+                    t.TextStyleId = StyleId(ts);
+                }
+
+                if (spec.WidthFactor is { } wf)
+                {
+                    t.WidthFactor = wf;
+                }
+
+                if (spec.Justify is { } j && j != "left")
+                {
+                    t.Justify = TextJustifyValue(j);
+                    t.AlignmentPoint = Pt(spec.A);
+                }
+
+                AdjustAlignment(t);
+                break;
+            case MText m:
+                if (spec.Style is { } ms2)
+                {
+                    m.TextStyleId = StyleId(ms2);
+                }
+
+                if (spec.Justify is { } mj)
+                {
+                    m.Attachment = MTextJustifyValue(mj);
+                }
+
+                break;
         }
 
         return ent.Handle.ToString();

@@ -14,5 +14,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PowerCad.Core\PowerCad.Core.csproj" />
+    <EmbeddedResource Include="..\..\docs\standards\floor_plan_standard.json" LogicalName="PowerCad.DraftingStandard" />
   </ItemGroup>
 </Project>
