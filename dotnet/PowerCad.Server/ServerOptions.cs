@@ -29,6 +29,9 @@ public sealed record ServerOptions(bool Simulate, string? Target, bool ReadOnly,
         cad_inventory lists every layout, block definition, block reference (nested) and XREF read-only.
         Use cad_batch for multi-step edits that must succeed together. Never unlock layers, delete the user's
         existing entities or widen max_changes without asking the user.
+        Before an automation, call ontology_auto_context(task) to pull every relevant door/window/wall/space, detail sheet and
+        block from the Ontology building-data REST API (POWERCAD_ONTOLOGY_URL) instead of asking the user to list them.
+        The ontology_* tools are read-only; their results are hints, so verify against the live drawing.
         """;
 
     public static ServerOptions Parse(string[] args, Func<string, string?> env)

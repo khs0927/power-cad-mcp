@@ -6,7 +6,7 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 | 구성 | 위치 | 용도 |
 | --- | --- | --- |
 | **power-cad-server + AutoCAD 2027 플러그인 (C#/.NET 10, 주력)** | [`dotnet/`](dotnet) | 실도면 수정. AutoCAD 내부에서 트랜잭션으로 실행하고, 수정 직전 대상 확인·수정 직후 자동 검증·실패 시 롤백 |
-| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회(7개 도구) |
+| power-cad-mcp (Python) | [`src/power_cad_mcp`](src/power_cad_mcp) | COM 폴백 작도 및 파일 인벤토리(42개 도구)와 AutoCAD 없는 DXF/PNG/PDF 작도·미리보기, Ontology 건물 데이터 조회·도면 대조(8개 도구) |
 | best-cad-mcp (외부, 선택) | `uvx --from best-cad-mcp cad-mcp` | 도면 의미·객체 관계 분석 — 별도 MCP 서버로 함께 연결 |
 
 - 설계 문서: [프레임워크](docs/framework/AutoCAD2027_Framework.md) · [운영 지침(ASTRA)](docs/framework/ASTRA_CAD_Operating_Playbook.md) ·
@@ -18,12 +18,13 @@ AI 어시스턴트(Claude Desktop, Claude Code 등 MCP 클라이언트)가 **Aut
 Claude ─stdio─▶ power-cad-server ─Named Pipe(토큰)─▶ PowerCad.Plugin.A27 (AutoCAD 2027 내부) ─▶ 도면 DB
 ```
 
-도구 39개 (C# 0.5.0 preview):
+도구 46개 (C# 0.5.0 preview):
 
 | 분류 | 도구 |
 | --- | --- |
 | 프레임워크 | `cad_get_document_identity`, `cad_bind_document`, `cad_extract_snapshot`, `cad_query_page`, `cad_review_snapshot`, `cad_plan_create`, `cad_plan_get`, `cad_plan_execute` |
 | 의미 컨텍스트 | `cad_context_query`, `cad_context_select`, `cad_context_actions`, `cad_context_action_select` |
+| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`** — Python 서버와 같은 이름·인자·결과 형태. `POWERCAD_ONTOLOGY_URL`을 설정해야 동작하며, 없으면 `[ONTOLOGY_NOT_CONFIGURED]` 오류를 돌려줍니다 |
 | 연결 | `cad_status`, `cad_list_targets`, `cad_select_target` |
 | 조회 | `cad_query`(필터·`group_by` 집계·`compact`·`within_mode`), `cad_get`, `cad_inspect`(단위·현재값·문자/치수 스타일·선종류·블록·범위), `cad_layers` |
 | 인벤토리 | `cad_inventory` — 이름을 몰라도 모든 레이아웃(탭 순서·플롯 장치/용지·뷰포트/객체 수), 블록 정의(동적 블록 실제 이름·익명/레이아웃/XREF 여부·속성 정의·객체 종류별 개수·중첩 블록·레이아웃별 삽입 수), 레이아웃별 블록 참조(핸들·위치·회전·축척·레이어·속성값, 중첩 참조는 `max_depth`(기본 2)까지 경로 표시), XREF(경로·찾음/미해결 상태·부착/오버레이·중첩 그래프)를 읽기 전용으로 나열. XREF 파일은 열지 않으며 `max_blocks`·`max_references`·전송 크기 한도를 넘으면 `*_truncated`로 표시 |
@@ -98,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register_codex.ps1
 | 블록 | `list_blocks`, `create_block`, `insert_block` |
 | 조회/편집 | `list_entities`, `get_entity`, `delete_entities`, `move_entities`, `copy_entities`, `rotate_entities`, `scale_entities`, `mirror_entities`, `offset_entity`, `set_entity_properties` |
 | 화면/기타 | `zoom_extents`, `zoom_window`, `run_command` |
-| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`** |
+| Ontology (읽기 전용) | `ontology_catalog`, `ontology_find_elements`, `ontology_blocks`, `ontology_drawings`, `ontology_element_context`, `ontology_search`, **`ontology_auto_context`**, `ontology_locate` |
 
 규칙:
 - 좌표는 `[x, y]` 또는 `[x, y, z]`(도면 단위), 각도는 **도(degree)**, +X 기준 반시계 방향입니다.
@@ -163,14 +164,16 @@ python scripts\smoke_test_autocad.py                         # 새 도면에 테
 | `POWER_CAD_ALLOW_LISP` | `0` | `1`이면 `run_command`에서 AutoLISP 식 허용(위험 함수는 계속 차단) |
 | `POWER_CAD_ONTOLOGY_ROOT` | – | `khs0927/Ontology` 로컬 checkout 경로. 설정 시 C# 주력 서버에서 CAIR context 도구 활성화 |
 | `POWER_CAD_ONTOLOGY_COMMAND` | `aec-mcp` | Ontology MCP 실행 명령. ROOT가 설정된 경우 기본값 사용 |
-| `POWER_CAD_ONTOLOGY_TIMEOUT` | `20` | Ontology stdio 호출 제한시간(초, 1–120) |
+| `POWER_CAD_ONTOLOGY_TIMEOUT` | `20` | **.NET 서버 전용**: `aec-mcp` stdio 호출 제한시간(초, 1–120). Python REST 도구에는 `POWERCAD_ONTOLOGY_TIMEOUT`을 씁니다 |
+| `POWER_CAD_BUSY_TIMEOUT` | `20` | **.NET AutoCAD 플러그인**: AutoCAD가 명령·대화상자로 바쁠 때 `CAD_BUSY`로 답하기까지 기다리는 시간(초, 3–300) |
 | `POWER_CAD_SION_URL` | – | Sion Ontology Platform의 HTTP base URL. 설정 시 Sion AEC federation을 우선 사용 |
 | `POWER_CAD_SION_TIMEOUT` | `20` | Sion AEC HTTP 호출 제한시간(초, 1–120) |
 | `POWER_CAD_SION_TOKEN` | – | 원격 Sion 호출용 Bearer token. loopback이 아닌 Sion URL에는 필수 |
-| `POWERCAD_ONTOLOGY_URL` | `http://127.0.0.1:58000` | Python `ontology_*` 도구가 읽는 Ontology REST API 주소 (`POWER_CAD_ONTOLOGY_URL`도 인식) |
-| `POWERCAD_ONTOLOGY_TIMEOUT` | `10` | Ontology REST 호출 제한시간(초, 1–120) |
-| `POWERCAD_ONTOLOGY_TOKEN` | – | 필요할 때 보내는 Bearer token |
-| `POWERCAD_ONTOLOGY_AUTO_CONTEXT` | `0` | `1`이면 `draw_batch`에 `task`가 있을 때 `ontology_auto_context`를 먼저 실행 |
+| `POWERCAD_ONTOLOGY_URL` | Python: `http://127.0.0.1:58000` · C#: – | `ontology_*` 도구가 읽는 Ontology REST API 주소 (`POWER_CAD_ONTOLOGY_URL`도 인식). C# 서버는 설정하지 않으면 `ontology_*` 도구가 `[ONTOLOGY_NOT_CONFIGURED]`로 답합니다 |
+| `POWERCAD_ONTOLOGY_TIMEOUT` | `10` | Python·C# 서버: Ontology REST 호출 제한시간(초, 1–120). .NET `aec-mcp`용 `POWER_CAD_ONTOLOGY_TIMEOUT`과는 별개입니다 |
+| `POWERCAD_ONTOLOGY_TOKEN` | – | Python·C# 서버: Ontology REST에 필요할 때 보내는 Bearer token |
+| `POWERCAD_ONTOLOGY_AUTO_CONTEXT` | `0` | Python 서버: `1`이면 `draw_batch`에 `task`가 있을 때 `ontology_auto_context`를 먼저 실행 |
+| `POWERCAD_ONTOLOGY_LIVE_URL` | – | 테스트 전용: 설정하면 `tests/test_ontology_live.py`가 이 주소의 실제 Ontology API로 계약 검사를 실행(없으면 skip) |
 
 CLI 옵션: `power-cad-mcp [--backend auto|autocad|dxf] [--workspace DIR] [--dxf-path FILE] [--launch]
 [--transport stdio|streamable-http|sse --host 127.0.0.1 --port 8765] [--check] [--version]`
@@ -195,7 +198,7 @@ Sion 경로에서는 응답이 반드시 `canonical=false`, `read_only=true`여�
 
 골든 경로는 `Ontology → Sion AEC federation → Power CAD live verification → AutoCAD transaction/rollback`입니다. Ontology/GraphRAG/Sion 결과가 직접 AutoCAD를 수정할 수 없고, 오래된 지식이나 잘못된 매핑은 live CAD 재검증 단계에서 차단됩니다.
 
-## Ontology 건물 데이터 자동 조회 (Python 서버)
+## Ontology 건물 데이터 자동 조회 (Python·C# 서버)
 
 Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Postgres + AGE + pgvector)를 **읽기 전용 REST API**로 조회합니다.
 자동화를 시작할 때 문·창·벽·실, 상세도, CAD 블록을 사용자가 일일이 나열하지 않아도 관련 항목을 스스로 모아 옵니다.
@@ -204,6 +207,9 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 
 1. Ontology 쪽에서 REST API를 띄웁니다(Ontology `docker compose up api` 기본 `http://127.0.0.1:58000`).
 2. 다른 주소라면 `POWERCAD_ONTOLOGY_URL`을 지정합니다. 예: `claude mcp add power-cad -e POWERCAD_ONTOLOGY_URL=http://127.0.0.1:58000 -- power-cad-mcp`
+   C# 주력 서버(`power-cad-server`)는 기본 주소가 없으므로 항상 지정합니다. 예: `claude mcp add power-cad -e POWERCAD_ONTOLOGY_URL=http://127.0.0.1:58000 -- power-cad-server`
+   (C# 서버의 `ontology_*` 도구는 아래 표와 같은 이름·인자·결과를 돌려주며, 오류 문구 앞에 `[ONTOLOGY_UNAVAILABLE]`/`[ONTOLOGY_FAILED]` 같은 코드가 붙습니다.
+   `draw_batch` 연결과 `open_drawing` 표시는 Python 서버에만 있습니다.)
 3. 서비스가 꺼져 있으면 각 도구는 `Ontology service is not reachable at …` 오류를 돌려주고, 작도 도구는 영향을 받지 않습니다.
 
 | 도구 | REST | 용도 |
@@ -214,9 +220,11 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 | `ontology_drawings` | `GET /v1/drawings?category=` | `plan`/`detail`/`section`/`elevation`/`structural`/`schedule` 또는 `평면도`/`상세도`/`창호도`…; 시트별 도면번호·도면명·축척 |
 | `ontology_element_context` | `GET /v1/elements/{id}/context?hops=` | 객체와 1–2 hop 그래프 이웃(층·실·호스트 벽·시트·블록 정의) |
 | `ontology_search` | `POST /v1/search` | 어휘 + 벡터 + 그래프 하이브리드 검색 (`top_k`, `kind`, `storey`) |
-| `ontology_auto_context` | 위 조합 | 작업 문장 하나로 필요한 자료 묶음을 한 번에 반환 |
+| `ontology_auto_context` | 위 조합 | 작업 문장 하나로 필요한 자료 묶음을 한 번에 반환 (`project_id`, 검색 결과 수 `k` 지정 가능) |
+| `ontology_locate` | `GET /v1/elements/{id}/context` + 열린 도면 | Ontology 객체 id → 현재 열린 도면의 실제 handle 확인(읽기 전용) |
 
-`ontology_auto_context(task, drawing?)`는 작업 문장(한국어/영어)에서 키워드로 대상을 추론합니다.
+`ontology_auto_context(task, drawing?, project_id?, k?)`는 작업 문장(한국어/영어)에서 키워드로 대상을 추론합니다.
+`project_id`를 주면 객체·도면·블록·검색 호출 모두 그 프로젝트로 한정합니다.
 
 - 문/도어/door → `Door`, 창/창문/window → `Window`, 창호 → `Window`+`Door`, 벽/벽체/wall → `Wall`, 실/방/room → `Space`
 - 기둥 → `Column`, 보 → `Beam`, 철골/H-형강 → `SteelSection`+구조도, 계단·슬래브
@@ -225,11 +233,38 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 
 예: `"2층 평면도 문 리스트 갱신"` → 2F의 Door 객체, 평면도·일람표 시트, Door 블록, 검색 결과를 한 번에 받습니다.
 층/시트/부호 필터로 결과가 없으면 해당 클래스 전체로 넓히고 `warnings`에 이유를 남깁니다.
-검색은 API가 질의 전체를 한 구절로 비교하므로, 작업 문장으로 결과가 없으면 부호·도면·클래스 단어(`문`, `창` …)로 다시 검색하고 `warnings`에 사용한 키워드를 남깁니다.
+검색은 추론한 클래스(하나일 때)와 층을 `kind`/`storey` 필터로 함께 보냅니다. API는 층을 정확히 일치로 비교하고 층 정보가 없는 도면도 많으므로,
+층 필터로 결과가 없으면 층 없이 다시 찾습니다. API가 질의 전체를 한 구절로 비교하기 때문에 작업 문장으로 결과가 없으면
+부호·도면·클래스 단어로 다시 검색하는데, 클래스 단어는 그 클래스를 `kind`로 묶어 보내므로 `창`이 `창고`, `실`이 `화장실`에 걸리지 않습니다.
+이때 `warnings`에는 실제로 보낸 키워드만 남깁니다.
+도면이 열려 있으면 묶음의 검색 결과·객체마다 `in_open_drawing`(원본 파일이 지금 열린 도면인지)이 붙고, `open_drawing`과
+`counts.in_open_drawing`이 함께 옵니다. 열린 도면을 알 수 없으면(예: AutoCAD 미실행) 이 표시는 조용히 생략됩니다.
+
+### Ontology 객체 → 도면 handle (`ontology_locate`)
+
+Ontology 객체에는 `handle`, `document_id`, `source_file`이 있지만 **handle은 도면 하나 안에서만 고유**합니다.
+다른 도면의 handle을 그대로 `move_entities`에 넘기면 엉뚱한 객체가 바뀔 수 있으므로, 편집 전에 `ontology_locate(element_ids)`로 확인합니다.
+
+- 객체마다 `/v1/elements/{id}/context`로 행을 받아 `source_file`과 열린 도면(`get_drawing_info`의 name/path)을 비교합니다.
+  파일 이름만, 대소문자 무시, `.dwg`/`.dxf` 확장자 차이는 같은 도면으로 봅니다(`A-201.dwg` = `a-201.DXF`).
+- 같은 도면이면 `get_entity(handle)`로 실제 존재를 확인하고, 엔티티 종류·레이어·블록 이름이 객체 클래스에 맞는지 봅니다
+  (예: 블록 `DOOR_SINGLE`인 문인데 LINE이면 불일치, 문인데 DIMENSION/TEXT면 불일치, 실(Space)은 TEXT 허용).
+- 결과 `status`: `matched`(편집 가능) · `mismatch`(handle은 있으나 대상이 달라 보임, `reasons`) · `handle_missing`(같은 도면에 없음, 다른 배치 탭 등)
+  · `other_drawing`(다른 파일이거나 열린 도면이 없음, handle을 조회조차 하지 않음) · `not_found`(Ontology에 없는 id).
+- 각 결과에 `element_id`, `handle`, `source_file`, `open_drawing`, `entity`(종류·레이어·블록 이름·위치 요약)가 있고, `matched_handles`에 편집 가능한 handle만 모읍니다.
+- 도면을 절대 수정하지 않습니다.
+
+권장 흐름:
+
+1. `ontology_auto_context(task)` — 대상 후보를 모으고 `in_open_drawing`으로 지금 도면의 것인지 확인
+2. 필요하면 해당 도면을 `open_drawing`으로 연 뒤 `ontology_locate(element_ids)` — `status="matched"`인 handle만 고름
+3. `get_entity` / `move_entities` / `delete_entities` / `set_entity_properties` 등 편집 도구에 그 handle을 넘김
 
 자동화 진입점 연결: `draw_batch(operations, task="…", auto_context=true)`로 호출하거나 `POWERCAD_ONTOLOGY_AUTO_CONTEXT=1`을 켜면
 작도 전에 `ontology_auto_context(task)`가 실행되어 결과의 `ontology_context`에 붙습니다. 서비스가 꺼져 있어도 작도는 그대로 진행되고
-`ontology_context.available=false`와 오류 문구만 남습니다. Ontology 결과는 참고 정보이므로, 실제 수정 전에는 현재 도면에서 대상을 다시 확인하세요.
+`ontology_context.available=false`와 오류 문구만 남습니다. 조회가 성공하면 `ontology_targets`도 붙습니다: 묶음 안의 객체를 추가 Ontology 호출 없이
+`ontology_locate`와 같은 규칙으로 열린 도면에 대조해, `matched`인 객체의 `element_id`·`class`·`name`·`handle`·엔티티 종류와 상태별 개수(`counts`)를 요약합니다.
+작도 작업 자체는 바뀌지 않습니다. Ontology 결과는 참고 정보이므로, 실제 수정에는 `matched` handle만 쓰세요.
 
 ## 보안
 
@@ -246,7 +281,7 @@ src/power_cad_mcp/
   backends/com_backend.py   AutoCAD COM: 전용 STA 스레드, busy 재시도(IMessageFilter), 오류 변환
   backends/dxf_backend.py   ezdxf headless 백엔드 + 렌더링
   safety.py            run_command 필터
-  ontology.py          Ontology REST 클라이언트(urllib), 작업 문장 키워드 추론, auto_context 묶음
+  ontology.py          Ontology REST 클라이언트(urllib), 작업 문장 키워드 추론, auto_context 묶음, 객체→도면 handle 대조(locate)
 tests/
   fake_acad.py         AutoCAD COM 객체 모델 모사 → COM 백엔드를 Linux CI에서도 검증
   test_live_autocad.py 실제 AutoCAD 대상 테스트 (옵트인)

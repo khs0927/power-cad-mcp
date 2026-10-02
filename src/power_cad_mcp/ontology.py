@@ -31,8 +31,13 @@ __all__ = [
     "OntologyUnavailable",
     "auto_context",
     "compact_element",
+    "drawing_key",
+    "in_drawing",
     "infer_task",
+    "locate",
+    "match_element",
     "rows",
+    "targets_summary",
 ]
 
 
@@ -594,14 +599,19 @@ def infer_task(task: str) -> dict[str, Any]:
     }
 
 
-def search_keywords(hints: dict[str, Any], drawing: str | None = None) -> list[str]:
-    """Short queries that the phrase-matching ``/v1/search`` can hit: marks, drawing, one word per class."""
-    words = list(hints.get("marks") or [])
+def search_keywords(hints: dict[str, Any], drawing: str | None = None) -> list[tuple[str, str | None]]:
+    """Short ``(query, kind)`` pairs that the phrase-matching ``/v1/search`` can hit.
+
+    Marks and the drawing go out unscoped (``kind=None``); a class word goes out with its class as the
+    ``kind`` filter, so one-syllable words (창, 실, 보) cannot match 창고 / 화장실 / 보일러.
+    """
+    pairs: list[tuple[str, str | None]] = [(m, None) for m in hints.get("marks") or [] if m]
     if drawing:
-        words.append(drawing)
+        pairs.append((drawing, None))
     for cls in hints.get("classes") or []:
-        words.append(_KIND_WORDS.get(cls, cls).split()[0])
-    return _unique(w for w in words if w)
+        pairs.append((_KIND_WORDS.get(cls, cls).split()[0], cls))
+    seen: set[tuple[str, str | None]] = set()
+    return [p for p in pairs if not (p in seen or seen.add(p))]
 
 
 # ------------------------------------------------------------------ composite
@@ -612,14 +622,22 @@ def auto_context(
     *,
     limit: int = 20,
     k: int = 10,
+    project_id: str | None = None,
+    open_drawing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect everything an automation needs for ``task`` in one bundle.
+
+    ``open_drawing`` is the CAD backend's ``drawing_info()``; when given, every search hit and element
+    is tagged ``in_open_drawing`` (its ``source_file`` is the open drawing) so the agent knows which
+    handles it can act on directly.
 
     Raises :class:`OntologyUnavailable` if the service is down; any other per-endpoint failure is
     reported under ``warnings`` so one missing endpoint does not hide the rest.
     """
     if not (task or "").strip():
         raise OntologyError("task must not be empty.")
+    drawing = (drawing or "").strip() or None
+    project_id = (project_id or "").strip() or None
     hints = infer_task(task)
     warnings: list[str] = []
 
@@ -632,19 +650,36 @@ def auto_context(
             warnings.append(f"{label}: {exc}")
             return None
 
-    bundle: dict[str, Any] = {"task": task, "drawing": drawing, "inferred": hints}
+    storey = hints["storey"]
+
+    def scoped_search(label: str, query: str, kind: str | None) -> list[dict[str, Any]]:
+        """Search with the inferred kind/storey; the API matches storey exactly and many drawings carry
+        no storey at all, so an empty storey-scoped result is retried without it."""
+        found = attempt(label, client.search, query, k, kind=kind, storey=storey, project_id=project_id)
+        if not found and storey:
+            found = attempt(label, client.search, query, k, kind=kind, project_id=project_id)
+        return found or []
+
+    bundle: dict[str, Any] = {"task": task, "drawing": drawing, "project_id": project_id, "inferred": hints}
     query = task if not drawing else f"{task} {drawing}"
-    found_hits = attempt("search", client.search, query, k) or []
+    single_kind = hints["classes"][0] if len(hints["classes"]) == 1 else None
+    found_hits = scoped_search("search", query, single_kind)
+    if not found_hits and single_kind:
+        found_hits = attempt("search", client.search, query, k, project_id=project_id) or []
     if not found_hits:
         # The API matches the whole query as one phrase (ILIKE / trigram), so a task sentence rarely
         # hits without real embeddings; retry with the marks, drawing and one word per class.
-        keywords = search_keywords(hints, drawing)
-        for word in keywords:
-            found_hits.extend(attempt(f"search[{word}]", client.search, word, k) or [])
+        queried: list[str] = []
+        for word, kind in search_keywords(hints, drawing):
+            queried.append(word if not kind else f"{word} ({kind})")
+            found_hits.extend(scoped_search(f"search[{word}]", word, kind))
             if len(_dedupe(found_hits)) >= k:
                 break
-        if found_hits:
-            warnings.append(f"search: no hit for the whole task; used keywords {keywords}.")
+        if queried:
+            warnings.append(
+                "search: the whole-task search returned nothing or failed; "
+                f"used keywords {queried}" + ("." if found_hits else " (no hit either).")
+            )
     bundle["search"] = _dedupe(found_hits)[:k]
 
     mark_list: list[str | None] = list(hints["marks"]) or [None]
@@ -656,15 +691,16 @@ def auto_context(
                 f"elements[{cls}]",
                 client.elements,
                 cls,
-                storey=hints["storey"],
+                project_id=project_id,
+                storey=storey,
                 sheet=drawing,
                 text=mark,
                 limit=limit,
             )
             found.extend(page["items"] if page else [])
-        if not found and (hints["storey"] or drawing or hints["marks"]):
+        if not found and (storey or drawing or hints["marks"]):
             # The filters are best-effort hints; fall back to the whole class rather than nothing.
-            relaxed = attempt(f"elements[{cls}]", client.elements, cls, limit=limit)
+            relaxed = attempt(f"elements[{cls}]", client.elements, cls, project_id=project_id, limit=limit)
             if relaxed and relaxed["items"]:
                 warnings.append(
                     f"elements[{cls}]: no match for storey/sheet/mark filters; showing all {cls}."
@@ -675,10 +711,12 @@ def auto_context(
 
     drawings: dict[str, list[dict[str, Any]]] = {}
     for cat in hints["drawing_categories"]:
-        page = attempt(f"drawings[{cat}]", client.drawings, cat, q=drawing, limit=limit)
+        page = attempt(
+            f"drawings[{cat}]", client.drawings, cat, q=drawing, project_id=project_id, limit=limit
+        )
         drawings[cat] = page["items"] if page else []
     if drawing and not drawings:
-        page = attempt("drawings", client.drawings, None, q=drawing, limit=limit)
+        page = attempt("drawings", client.drawings, None, q=drawing, project_id=project_id, limit=limit)
         drawings["match"] = page["items"] if page else []
     bundle["drawings"] = drawings
 
@@ -686,16 +724,270 @@ def auto_context(
     if hints["include_blocks"]:
         block_classes = [c for c in hints["classes"] if c in ("Door", "Window", "Furniture")]
         for cls in block_classes or ["all"]:
-            page = attempt(f"blocks[{cls}]", client.blocks, None if cls == "all" else cls, limit=limit)
+            page = attempt(
+                f"blocks[{cls}]",
+                client.blocks,
+                None if cls == "all" else cls,
+                project_id=project_id,
+                limit=limit,
+            )
             blocks[cls] = page["items"] if page else []
     bundle["blocks"] = blocks
 
-    bundle["counts"] = {
+    counts: dict[str, Any] = {
         "search": len(bundle["search"]),
         "elements": {cls: len(v) for cls, v in elements.items()},
         "drawings": {cat: len(v) for cat, v in drawings.items()},
         "blocks": {cat: len(v) for cat, v in blocks.items()},
     }
+    if open_drawing:
+        bundle["open_drawing"] = _drawing_label(open_drawing)
+        tagged = [*bundle["search"], *(el for items in elements.values() for el in items)]
+        for item in tagged:
+            item["in_open_drawing"] = bool(in_drawing(item.get("source_file"), open_drawing))
+        counts["in_open_drawing"] = len(
+            {item.get("id") or id(item) for item in tagged if item["in_open_drawing"]}
+        )
+    bundle["counts"] = counts
     bundle["warnings"] = warnings
     bundle["read_only"] = True
     return bundle
+
+
+# --------------------------------------------------------------- ontology -> CAD
+# Ontology rows carry the DWG/DXF handle the element was parsed from, but a handle is only unique
+# inside one drawing. Before an edit tool touches it, the element's source file must be the drawing
+# that is open now, the handle must exist there, and the entity must look like the element.
+CAD_EXTENSIONS = (".dwg", ".dxf", ".dwt", ".dws")
+
+_GEOMETRY = frozenset(
+    {"LINE", "ARC", "CIRCLE", "ELLIPSE", "LWPOLYLINE", "POLYLINE", "SPLINE", "INSERT", "HATCH", "SOLID"}
+    | {"MLINE", "3DFACE", "REGION"}
+)
+_TEXT = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF"})
+# Element classes whose evidence may legitimately be a text entity (room names, labels, marks).
+_TEXT_CLASSES = frozenset(
+    {"Space", "Room", "Text", "Annotation", "Label", "Note", "Tag", "Mark", "TitleBlock", "DrawingTitle"}
+    | {"Grid", "GridLine"}
+)
+# Entity types that are never a building element.
+_NOT_ELEMENT = frozenset(
+    {"DIMENSION", "LEADER", "MLEADER", "MULTILEADER", "VIEWPORT", "XLINE", "RAY", "IMAGE", "OLE2FRAME"}
+    | {"WIPEOUT"}
+)
+_PHYSICAL_CLASSES = frozenset(
+    {"Door", "Window", "Wall", "Column", "Beam", "SteelSection", "Stair", "Slab", "Furniture", "Opening"}
+    | {"CurtainWall"}
+)
+
+
+def drawing_key(name: Any) -> str | None:
+    """``'C:\\Proj\\A-201.DWG'`` / ``'a-201.dxf'`` / ``'A-201'`` -> ``'a-201'``: basename, case-folded,
+    without a CAD extension, so the DWG an element was parsed from matches the DXF copy that is open."""
+    text = str(name or "").strip().strip('"')
+    if not text:
+        return None
+    base = re.split(r"[\\/]", text)[-1].strip().lower()
+    for ext in CAD_EXTENSIONS:
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base or None
+
+
+def _drawing_keys(open_drawing: dict[str, Any] | None) -> set[str]:
+    if not isinstance(open_drawing, dict):
+        return set()
+    keys = (drawing_key(open_drawing.get("name")), drawing_key(open_drawing.get("path")))
+    return {key for key in keys if key}
+
+
+def _drawing_label(open_drawing: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty({"name": open_drawing.get("name"), "path": open_drawing.get("path")})
+
+
+def in_drawing(source_file: Any, open_drawing: dict[str, Any] | None) -> bool | None:
+    """True when ``source_file`` is the open drawing, False when it is another one, None when unknown."""
+    key = drawing_key(source_file)
+    keys = _drawing_keys(open_drawing)
+    if not key or not keys:
+        return None
+    return key in keys
+
+
+def entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
+    keys = ("handle", "type", "layer", "name", "text", "insert", "center", "start", "end")
+    return {key: entity[key] for key in keys if entity.get(key) not in (None, "")}
+
+
+def plausibility(element: dict[str, Any], entity: dict[str, Any]) -> list[str]:
+    """Reasons the live entity does not look like the Ontology element (empty list = plausible)."""
+    reasons: list[str] = []
+    etype = str(entity.get("type") or "").upper()
+    cls = str(element.get("class") or "")
+    if cls in _PHYSICAL_CLASSES or cls in _TEXT_CLASSES:
+        allowed = _GEOMETRY | _TEXT if cls in _TEXT_CLASSES else _GEOMETRY
+        if etype and etype not in allowed:
+            reasons.append(f"a {etype} entity is not a plausible {cls}")
+    elif etype in _NOT_ELEMENT and cls and cls not in ("Dimension", "Annotation", "Viewport"):
+        reasons.append(f"a {etype} entity is not a plausible {cls}")
+    block = str(element.get("block_name") or "")
+    if block and etype and etype != "INSERT":
+        reasons.append(f"element is block {block!r} but the entity is a {etype}")
+    elif block and etype == "INSERT":
+        name = str(entity.get("name") or "")
+        # Dynamic/anonymous references (*U12) carry the effective name only in the Ontology row.
+        if name and not name.startswith("*") and name.lower() != block.lower():
+            reasons.append(f"element is block {block!r} but the entity inserts {name!r}")
+    layer = str(element.get("layer") or "")
+    live_layer = str(entity.get("layer") or "")
+    if layer and live_layer and layer.lower() != live_layer.lower():
+        reasons.append(f"element is on layer {layer!r} but the entity is on {live_layer!r}")
+    return reasons
+
+
+def match_element(
+    element: dict[str, Any] | None,
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+    *,
+    element_id: str | None = None,
+) -> dict[str, Any]:
+    """Decide whether an Ontology element can be acted on in the open drawing. Never edits anything.
+
+    ``lookup(handle)`` returns the live entity dict or None when the handle does not exist.
+    Status: ``matched`` (same drawing, handle exists, entity plausible), ``mismatch`` (handle exists but
+    the entity does not look like the element), ``handle_missing`` (same drawing, no such entity / no
+    handle recorded), ``other_drawing`` (another file, or the open drawing is unknown) or ``not_found``.
+    """
+    label = _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None
+    if not element:
+        return _drop_empty({"element_id": element_id, "status": "not_found", "open_drawing": label})
+    handle = str(element.get("handle") or "").strip() or None
+    out: dict[str, Any] = {
+        "element_id": element.get("id") or element_id,
+        "class": element.get("class"),
+        "name": element.get("name"),
+        "handle": handle,
+        "source_file": element.get("source_file"),
+        "sheet": element.get("sheet"),
+        "open_drawing": label,
+    }
+    same = in_drawing(element.get("source_file"), open_drawing)
+    if not same:
+        out["status"] = "other_drawing"
+        if same is None:
+            out["note"] = (
+                "no drawing is open" if not _drawing_keys(open_drawing) else "the element has no source_file"
+            )
+        return _drop_empty(out)
+    if not handle:
+        return _drop_empty(out | {"status": "handle_missing", "note": "the element has no handle"})
+    entity = lookup(handle)
+    if not entity:
+        note = "no model-space entity with this handle in the open drawing"
+        sheet = str(element.get("sheet") or "")
+        if sheet and sheet.lower() != "model":
+            note += f" (the element was parsed from layout {sheet!r})"
+        return _drop_empty(out | {"status": "handle_missing", "note": note})
+    out["entity"] = entity_summary(entity)
+    reasons = plausibility(element, entity)
+    if reasons:
+        return _drop_empty(out | {"status": "mismatch", "reasons": reasons})
+    return _drop_empty(out | {"status": "matched"})
+
+
+def element_of(payload: Any) -> dict[str, Any] | None:
+    """The element row inside an ``/v1/elements/{id}/context`` answer (or a bare element row)."""
+    if isinstance(payload, dict):
+        row = payload.get("element") if isinstance(payload.get("element"), dict) else payload
+        element = compact_element(row)
+        return element if element.get("id") else None
+    return None
+
+
+def locate(
+    client: OntologyClient,
+    element_ids: Iterable[str],
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+) -> dict[str, Any]:
+    """Fetch each element and :func:`match_element` it against the open drawing (read-only)."""
+    results = []
+    for raw_id in _unique(str(i).strip() for i in element_ids if str(i).strip()):
+        try:
+            element = element_of(client.element_context(raw_id, hops=1))
+            error = None
+        except OntologyUnavailable:
+            raise
+        except OntologyError as exc:
+            element, error = None, str(exc)
+        result = match_element(element, open_drawing, lookup, element_id=raw_id)
+        if error and result["status"] == "not_found":
+            result["error"] = error
+        results.append(result)
+    return _locate_report(results, open_drawing)
+
+
+def _locate_report(results: list[dict[str, Any]], open_drawing: dict[str, Any] | None) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return {
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": counts,
+        "matched_handles": [r["handle"] for r in results if r["status"] == "matched"],
+        "results": results,
+        "read_only": True,
+    }
+
+
+def targets_summary(
+    bundle: dict[str, Any],
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+    *,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Locate the elements an auto_context bundle already carries (no extra Ontology calls).
+
+    Only elements of the open drawing are looked up; the rest are just counted as ``other_drawing``.
+    Returns the matched handles (with class/name/entity type) the agent can pass to the edit tools.
+    """
+    by_class = (bundle.get("elements") or {}).values()
+    elements = [*(bundle.get("search") or []), *(e for items in by_class for e in items)]
+    seen: set[Any] = set()
+    counts: dict[str, int] = {}
+    targets: list[dict[str, Any]] = []
+    other: list[str] = []
+    for element in elements:
+        key = element.get("id") or (element.get("source_file"), element.get("handle"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result = match_element(element, open_drawing, lookup)
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+        if result["status"] == "matched" and len(targets) < limit:
+            entity = result.get("entity") or {}
+            targets.append(
+                _drop_empty(
+                    {
+                        "element_id": result.get("element_id"),
+                        "class": result.get("class"),
+                        "name": result.get("name"),
+                        "handle": result["handle"],
+                        "type": entity.get("type"),
+                        "layer": entity.get("layer"),
+                    }
+                )
+            )
+        elif result["status"] in ("mismatch", "handle_missing") and len(other) < limit:
+            other.append(f"{result.get('element_id')}: {result['status']}")
+    out: dict[str, Any] = {
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": counts,
+        "targets": targets,
+    }
+    if other:
+        out["not_actionable"] = other
+    return out
