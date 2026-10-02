@@ -29,7 +29,7 @@ def _seconds(value: str | None, default: float) -> float:
     return min(max(seconds, 1.0), 120.0)
 
 
-DEFAULT_ONTOLOGY_URL = "http://127.0.0.1:8765"
+DEFAULT_ONTOLOGY_URL = "http://127.0.0.1:58000"
 
 
 @dataclass

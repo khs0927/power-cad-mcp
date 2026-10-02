@@ -460,7 +460,7 @@ def test_settings_from_env(monkeypatch):
     monkeypatch.delenv("POWERCAD_ONTOLOGY_URL")
     monkeypatch.setenv("POWERCAD_ONTOLOGY_TIMEOUT", "abc")
     s = Settings.from_env()
-    assert s.ontology_url == "http://127.0.0.1:8765" and s.ontology_timeout == 10.0
+    assert s.ontology_url == "http://127.0.0.1:58000" and s.ontology_timeout == 10.0
 
 
 # ---------------------------------------------------------------- MCP tools

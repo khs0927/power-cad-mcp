@@ -137,8 +137,7 @@ python scripts\smoke_test_autocad.py                         # 새 도면에 테
 | `POWER_CAD_SION_URL` | – | Sion Ontology Platform의 HTTP base URL. 설정 시 Sion AEC federation을 우선 사용 |
 | `POWER_CAD_SION_TIMEOUT` | `20` | Sion AEC HTTP 호출 제한시간(초, 1–120) |
 | `POWER_CAD_SION_TOKEN` | – | 원격 Sion 호출용 Bearer token. loopback이 아닌 Sion URL에는 필수 |
-
-| `POWERCAD_ONTOLOGY_URL` | `http://127.0.0.1:8765` | Python `ontology_*` 도구가 읽는 Ontology REST API 주소 (`POWER_CAD_ONTOLOGY_URL`도 인식) |
+| `POWERCAD_ONTOLOGY_URL` | `http://127.0.0.1:58000` | Python `ontology_*` 도구가 읽는 Ontology REST API 주소 (`POWER_CAD_ONTOLOGY_URL`도 인식) |
 | `POWERCAD_ONTOLOGY_TIMEOUT` | `10` | Ontology REST 호출 제한시간(초, 1–120) |
 | `POWERCAD_ONTOLOGY_TOKEN` | – | 필요할 때 보내는 Bearer token |
 | `POWERCAD_ONTOLOGY_AUTO_CONTEXT` | `0` | `1`이면 `draw_batch`에 `task`가 있을 때 `ontology_auto_context`를 먼저 실행 |
@@ -173,9 +172,8 @@ Google Drive의 모든 DWG/DXF를 파싱해 둔 Ontology(`aec_intelligence`, Pos
 
 설정:
 
-1. Ontology 쪽에서 REST API를 띄웁니다(기본 `http://127.0.0.1:8765`).
-2. 다른 주소라면 `POWERCAD_ONTOLOGY_URL`을 지정합니다. 예: `claude mcp add power-cad -e POWERCAD_ONTOLOGY_URL=http://127.0.0.1:8765 -- power-cad-mcp`
-   (`power-cad-mcp --transport streamable-http`도 기본 포트가 8765이므로 함께 쓸 때는 둘 중 하나의 포트를 바꾸세요.)
+1. Ontology 쪽에서 REST API를 띄웁니다(Ontology `docker compose up api` 기본 `http://127.0.0.1:58000`).
+2. 다른 주소라면 `POWERCAD_ONTOLOGY_URL`을 지정합니다. 예: `claude mcp add power-cad -e POWERCAD_ONTOLOGY_URL=http://127.0.0.1:58000 -- power-cad-mcp`
 3. 서비스가 꺼져 있으면 각 도구는 `Ontology service is not reachable at …` 오류를 돌려주고, 작도 도구는 영향을 받지 않습니다.
 
 | 도구 | REST | 용도 |

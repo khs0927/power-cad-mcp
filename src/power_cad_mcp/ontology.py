@@ -63,7 +63,7 @@ class OntologyClient:
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise OntologyError(
-                "POWERCAD_ONTOLOGY_URL must be an http(s) URL such as http://127.0.0.1:8765 "
+                "POWERCAD_ONTOLOGY_URL must be an http(s) URL such as http://127.0.0.1:58000 "
                 f"(got {base_url!r})."
             )
         self.base_url = base_url
