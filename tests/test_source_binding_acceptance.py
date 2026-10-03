@@ -174,7 +174,7 @@ def test_source_and_file_hashes_must_be_valid_and_equal():
     h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     result = evaluate(h=h)
     assert result["status"] == sba.BLOCKED
-    assert "handoff_source_file_hash_mismatch" in result["reasons"]
+    assert "handoff_source_resolved_file_hash_mismatch" in result["reasons"]
 
     h = handoff()
     h["file_sha256"] = "bad"
