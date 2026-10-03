@@ -263,6 +263,49 @@ class OntologyClient:
             sheets = [r for r in sheets if q.lower() in json.dumps(r, ensure_ascii=False).lower()] or sheets
         return {"items": sheets[:limit], "next_cursor": next_cursor}
 
+    def documents(
+        self,
+        accept: Callable[[dict[str, Any]], bool] | None = None,
+        *,
+        project_id: str | None = None,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Raw /v1/drawings documents for bounded read-only reconciliation."""
+        out: list[dict[str, Any]] = []
+        cursor = None
+        for _ in range(max_pages):
+            payload = self.get("/v1/drawings", project_id=project_id, limit=MAX_PAGE, cursor=cursor)
+            out.extend(r for r in rows(payload, "drawings") if accept is None or accept(r))
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                break
+        return out
+
+    def document_elements(
+        self, document_id: str, *, project_id: str | None = None, max_rows: int = 100_000
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read one document's elements with bounded keyset paging; never mutates Ontology."""
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            payload = self.get(
+                "/v1/elements",
+                document_id=document_id,
+                project_id=project_id,
+                include_properties="true",
+                limit=MAX_PAGE,
+                cursor=cursor,
+            )
+            for row in rows(payload, "elements"):
+                element = compact_element(row)
+                if element.get("document_id") in (None, document_id):
+                    out.append(element)
+                    if len(out) >= max_rows:
+                        return out, bool(payload.get("next_cursor")) if isinstance(payload, dict) else False
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                return out, False
+
     def element_context(self, element_id: str, hops: int = 1) -> Any:
         if not str(element_id).strip():
             raise OntologyError("element_id must not be empty.")
@@ -303,6 +346,23 @@ def _error_detail(exc: urllib.error.HTTPError) -> str:
             if data.get(key):
                 return str(data[key])[:300]
     return ""
+
+
+# ---------------------------------------------------------------------- drawing identity
+CAD_EXTENSIONS = (".dwg", ".dxf", ".dwt", ".dws")
+
+
+def drawing_key(name: Any) -> str | None:
+    """Normalize a CAD file reference to a case-folded basename without CAD extension."""
+    text = str(name or "").strip().strip('"')
+    if not text:
+        return None
+    base = re.split(r"[\\/]", text)[-1].strip().lower()
+    for ext in CAD_EXTENSIONS:
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base or None
 
 
 # ---------------------------------------------------------------------- normalising
