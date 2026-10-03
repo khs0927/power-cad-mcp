@@ -79,6 +79,18 @@ public sealed class NvidiaVisualReasoningTests
     }
 
     [Fact]
+    public void Environment_factory_requires_explicit_endpoint()
+    {
+        var onlyKey = NvidiaCosmosReasoner.FromEnvironment(name =>
+            name == "NVIDIA_API_KEY" ? "nvapi-test" : null);
+        Assert.False(onlyKey.Enabled);
+
+        var localNim = NvidiaCosmosReasoner.FromEnvironment(name =>
+            name == "NVIDIA_COSMOS_ENDPOINT" ? "http://127.0.0.1:8000/v1/chat/completions" : null);
+        Assert.True(localNim.Enabled);
+    }
+
+    [Fact]
     public void Final_parser_keeps_only_post_think_json()
     {
         var parsed = NvidiaCosmosReasoner.ParseFinalJson("<think>do not store me</think>\n```json\n{\"verdict\":\"REVIEW\"}\n```");
