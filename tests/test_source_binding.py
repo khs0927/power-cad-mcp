@@ -11,7 +11,6 @@ from power_cad_mcp.source_binding import (
     verify_source_bound,
 )
 
-
 SHA = "a" * 64
 RECEIPT = "b" * 64
 
@@ -175,7 +174,13 @@ class SourceBindingTests(unittest.TestCase):
         self.assertIn("live_instance_path_mismatch", report["reasons"])
 
     def test_handle_is_case_insensitive_but_layout_is_exact(self):
-        ok = verify_source_bound(ticket(), candidate(handle="2f3"), document(), entity(handle="2F3"), now=self.NOW)
+        ok = verify_source_bound(
+            ticket(),
+            candidate(handle="2f3"),
+            document(),
+            entity(handle="2F3"),
+            now=self.NOW,
+        )
         self.assertEqual(ok["binding_state"], "SOURCE_BOUND")
 
         bad = verify_source_bound(
