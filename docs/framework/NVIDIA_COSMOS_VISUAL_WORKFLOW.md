@@ -1,31 +1,34 @@
-# NVIDIA Cosmos visual verification
+# NVIDIA Cosmos Reason2 visual verification
 
-Power CAD can use NVIDIA Cosmos Reason as a **read-only secondary verifier** after the deterministic AutoCAD transaction/read-back path.
+Power CAD uses NVIDIA Cosmos Reason2 2B as a **read-only secondary verifier** after the deterministic AutoCAD transaction/read-back path.
 
-## Configuration
+## Official Reason2 2B deployment
 
-Set secrets outside Git:
+The current NVIDIA NIM documentation runs `nvidia/cosmos-reason2-2b` behind an OpenAI-compatible local NIM endpoint:
 
-```powershell
-$env:NVIDIA_API_KEY = "nvapi-..."
-$env:NVIDIA_COSMOS_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions"
-# Hosted Build currently exposes Reason2 8B publicly; omit MODEL for auto-selection.
-# For a self-hosted Reason2 2B NIM:
-$env:NVIDIA_COSMOS_MODEL = "nvidia/cosmos-reason2-2b"
+```text
+http://127.0.0.1:8000/v1/chat/completions
 ```
 
-For a self-hosted NIM, point `NVIDIA_COSMOS_ENDPOINT` to its `/v1/chat/completions` endpoint. The model name is configurable because hosted catalog availability can differ from self-hosted NIM availability.
+Pulling/launching the NIM container uses `NGC_API_KEY`. Querying a local NIM does not require bearer authentication. If you expose a private remote NIM behind an authenticated gateway, set `NVIDIA_API_KEY` for that gateway.
+
+```powershell
+$env:NVIDIA_COSMOS_ENDPOINT = "http://127.0.0.1:8000/v1/chat/completions"
+$env:NVIDIA_COSMOS_MODEL = "nvidia/cosmos-reason2-2b"
+# Optional only for a remote endpoint that requires bearer auth:
+$env:NVIDIA_API_KEY = "..."
+```
+
+The endpoint remains configurable so the same contract can target a remote/self-hosted NIM.
 
 ## Tools
 
 - `cad_visual_inspect`: identify visible CAD objects and anomalies.
 - `cad_visual_verify`: check whether an expected post-edit state is visibly plausible.
 
-Both tools capture the current AutoCAD view through the existing snapshot command and send only that raster image to the configured NVIDIA endpoint.
+Both tools capture the current AutoCAD view through the existing snapshot command and send only that raster image to the configured Reason2 endpoint.
 
 ## Authority boundary
-
-The visual model is never authoritative:
 
 ```text
 cad_plan_execute
@@ -35,11 +38,4 @@ cad_plan_execute
   -> user/agent review
 ```
 
-Vision output does not unlock layers, approve a write, change CAIR/Ontology truth, or bypass fingerprint checks. Model `<think>` traces are discarded; only final structured evidence is returned.
-
-## Hosted vs 2B NIM
-
-The adapter chooses `nvidia/cosmos-reason2-8b` by default when
-`NVIDIA_COSMOS_ENDPOINT` points to NVIDIA Build (`integrate.api.nvidia.com`).
-For a self-hosted NIM it defaults to `nvidia/cosmos-reason2-2b`.
-`NVIDIA_COSMOS_MODEL` always overrides the automatic choice.
+Vision output does not unlock layers, approve a write, change Ontology truth, or bypass fingerprint checks. Model `<think>` traces are discarded; only final structured evidence is returned.
