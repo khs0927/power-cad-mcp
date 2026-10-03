@@ -2,11 +2,7 @@ import copy
 import hashlib
 import json
 
-from power_cad_mcp.source_binding_acceptance import (
-    BLOCKED,
-    READY,
-    evaluate_source_binding_acceptance,
-)
+from power_cad_mcp.source_binding_acceptance import BLOCKED, READY, evaluate_source_binding_acceptance
 
 
 SHA = "a" * 64
