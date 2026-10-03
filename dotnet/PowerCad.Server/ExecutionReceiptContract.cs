@@ -121,11 +121,22 @@ public static class ExecutionReceiptContract
             {
                 status = "COMMITTED";
                 committed = true;
+
+                if (!StringComparer.Ordinal.Equals(OptionalText(result, "executor"), "power-cad"))
+                    reasons.Add("committed_result_executor_mismatch");
+                if (!StringComparer.Ordinal.Equals(OptionalText(result, "plan_id"), planId))
+                    reasons.Add("committed_result_plan_id_mismatch");
+                if (!StringComparer.Ordinal.Equals(OptionalText(result, "document_id"), documentId))
+                    reasons.Add("committed_result_document_id_mismatch");
             }
         }
         else if (state == "Failed")
         {
-            if (rollbackVerified)
+            if (rollbackVerified && mutationStarted is false)
+            {
+                reasons.Add("conflicting_failure_evidence");
+            }
+            else if (rollbackVerified)
             {
                 status = "ROLLED_BACK";
             }
