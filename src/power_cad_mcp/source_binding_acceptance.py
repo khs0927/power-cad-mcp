@@ -9,7 +9,6 @@ from __future__ import annotations
 import ntpath
 from typing import Any
 
-
 SCHEMA = "aec-source-live-binding/1"
 READY = "READY_FOR_EXECUTOR_REVALIDATION"
 BLOCKED = "BLOCKED"
