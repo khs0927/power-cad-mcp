@@ -13,6 +13,7 @@ import ntpath
 from typing import Any
 
 SCHEMA = "aec-executor-handoff/1"
+TRUST_POLICY_SCHEMA = "power-cad-resolver-trust-policy/1"
 READY = "READY_FOR_EXECUTOR_REVALIDATION"
 BLOCKED = "BLOCKED"
 _HEX = set("0123456789abcdef")
@@ -78,15 +79,88 @@ def _verify_handoff_digest(handoff: dict[str, Any]) -> bool:
     return declared == _digest(payload)
 
 
+def _resolver_policy_match(
+    handoff: dict[str, Any],
+    trust_policy: dict[str, Any] | None,
+    reasons: list[str],
+) -> bool:
+    if trust_policy is None:
+        reasons.append("missing_resolver_trust_policy")
+        return False
+    if not isinstance(trust_policy, dict) or trust_policy.get("schema") != TRUST_POLICY_SCHEMA:
+        reasons.append("unsupported_resolver_trust_policy")
+        return False
+
+    entries = trust_policy.get("trusted_resolvers")
+    if not isinstance(entries, list) or not entries:
+        reasons.append("resolver_trust_policy_has_no_entries")
+        return False
+
+    resolver_id = _text(handoff.get("resolver_id"))
+    issuer = _text(handoff.get("resolver_issuer"))
+    domain = _text(handoff.get("trust_domain"))
+    key_id = _text(handoff.get("signature_key_id"))
+
+    if handoff.get("receipt_signature_verified") is not True:
+        reasons.append("resolver_receipt_signature_not_verified")
+    if handoff.get("immutable_cache") is not True:
+        reasons.append("resolver_cache_not_immutable")
+    for name, value in (
+        ("resolver_id", resolver_id),
+        ("resolver_issuer", issuer),
+        ("trust_domain", domain),
+        ("signature_key_id", key_id),
+    ):
+        if value is None:
+            reasons.append(f"missing_resolver_trust_identity:{name}")
+
+    if None in (resolver_id, issuer, domain, key_id):
+        return False
+
+    valid_entries = 0
+    for row in entries:
+        if not isinstance(row, dict):
+            continue
+        row_resolver = _text(row.get("resolver_id"))
+        row_issuer = _text(row.get("resolver_issuer"))
+        row_domain = _text(row.get("trust_domain"))
+        key_ids = row.get("signature_key_ids")
+        if (
+            row_resolver is None
+            or row_issuer is None
+            or row_domain is None
+            or not isinstance(key_ids, list)
+            or not key_ids
+            or any(_text(item) is None for item in key_ids)
+        ):
+            continue
+        valid_entries += 1
+        if (
+            row_resolver == resolver_id
+            and row_issuer == issuer
+            and row_domain == domain
+            and key_id in key_ids
+        ):
+            return True
+
+    if valid_entries == 0:
+        reasons.append("resolver_trust_policy_has_no_valid_entries")
+    else:
+        reasons.append("resolver_trust_policy_rejected")
+    return False
+
+
 def evaluate_source_binding_acceptance(
     handoff: dict[str, Any],
     fresh_document: dict[str, Any],
     fresh_target: dict[str, Any],
+    trust_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recheck an Ontology executor handoff against fresh CAD observations.
 
     READY means only that the bounded handoff still matches fresh read-only
-    observations. It is not an execution token.
+    observations and the executor's current resolver trust policy. It is not an
+    execution token.
     """
     reasons: list[str] = []
 
@@ -116,6 +190,7 @@ def evaluate_source_binding_acceptance(
         "state_digest",
         "modification_generation",
         "units",
+        "resolver_id",
         "cache_entry_id",
         "resolver_issuer",
         "trust_domain",
@@ -133,12 +208,18 @@ def evaluate_source_binding_acceptance(
     if file_sha is None:
         reasons.append("missing_or_invalid_handoff_file_sha256")
     if resolved_sha is None:
-        reasons.append("missing_or_invalid_resolved_sha256")
+        reasons.append("missing_or_invalid_handoff_resolved_sha256")
     if receipt_sha is None:
         reasons.append("missing_or_invalid_resolver_receipt_sha256")
-    hashes = [value for value in (source_sha, file_sha, resolved_sha) if value is not None]
-    if len(hashes) == 3 and len(set(hashes)) != 1:
+    if (
+        source_sha is not None
+        and file_sha is not None
+        and resolved_sha is not None
+        and len({source_sha, file_sha, resolved_sha}) != 1
+    ):
         reasons.append("handoff_source_resolved_file_hash_mismatch")
+
+    resolver_trust_matched = _resolver_policy_match(handoff, trust_policy, reasons)
 
     locator = handoff.get("object_locator")
     if not isinstance(locator, dict):
@@ -194,7 +275,7 @@ def evaluate_source_binding_acceptance(
 
     reasons = sorted(set(reasons))
     return {
-        "schema": "power-cad-source-binding-acceptance/2",
+        "schema": "power-cad-source-binding-acceptance/3",
         "status": READY if not reasons else BLOCKED,
         "reasons": reasons,
         "handoff_digest": handoff.get("handoff_digest"),
@@ -205,11 +286,13 @@ def evaluate_source_binding_acceptance(
         "document_id": fresh_document.get("document_id"),
         "file_sha256": fresh_document.get("file_sha256"),
         "resolved_sha256": handoff.get("resolved_sha256"),
+        "handle": fresh_target.get("handle"),
+        "fingerprint": fresh_target.get("fingerprint"),
+        "resolver_id": handoff.get("resolver_id"),
         "resolver_issuer": handoff.get("resolver_issuer"),
         "trust_domain": handoff.get("trust_domain"),
         "signature_key_id": handoff.get("signature_key_id"),
-        "handle": fresh_target.get("handle"),
-        "fingerprint": fresh_target.get("fingerprint"),
+        "resolver_trust_matched": resolver_trust_matched,
         "may_execute_mutation": False,
         "execution_authorized": False,
         "requires_transaction_revalidation": True,
@@ -217,9 +300,10 @@ def evaluate_source_binding_acceptance(
         "requires_execution_receipt": True,
         "note": (
             "READY means only that the Ontology executor handoff still matches "
-            "fresh read-only document bytes/state and target identity. Power CAD "
-            "must re-check document state, file identity and target fingerprint "
-            "inside the single-writer transaction before mutation and then emit "
+            "fresh read-only document bytes/state, target identity and the "
+            "executor's current resolver trust policy. Power CAD must re-check "
+            "document state, file identity and target fingerprint inside the "
+            "single-writer transaction before mutation and then emit "
             "COMMITTED/ROLLED_BACK/REJECTED/INDETERMINATE."
         ),
     }
