@@ -8,9 +8,9 @@ identity. Execution authorization remains a later executor concern.
 
 from __future__ import annotations
 
+import ntpath
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import ntpath
 from typing import Any
 
 
