@@ -87,8 +87,10 @@ class SourceTicket:
 
     def current(self, now: str) -> bool:
         when = _time(now, "now")
-        return _time(self.issued_at, "SourceTicket.issued_at") <= when <= _time(
-            self.expires_at, "SourceTicket.expires_at"
+        return (
+            _time(self.issued_at, "SourceTicket.issued_at")
+            <= when
+            <= _time(self.expires_at, "SourceTicket.expires_at")
         )
 
 
