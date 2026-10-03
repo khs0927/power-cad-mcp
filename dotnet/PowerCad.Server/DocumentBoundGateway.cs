@@ -17,7 +17,8 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
     private static void ValidateSourceBinding(JsonObject binding, string documentId)
     {
         string Required(string name) =>
-            binding[name]?.GetValue<string>() is { Length: > 0 } value
+            binding[name] is JsonValue node && node.TryGetValue<string>(out var value)
+                && !string.IsNullOrWhiteSpace(value)
                 ? value
                 : throw CadException.Invalid($"source_binding.{name} is required.");
 
@@ -36,12 +37,17 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
                  })
             _ = Required(name);
 
-        var digest = Required("handoff_digest");
-        if (digest.Length != 64 || digest.Any(ch => !Uri.IsHexDigit(ch)))
-            throw CadException.Invalid("source_binding.handoff_digest must be a SHA-256 hex digest.");
-        if (binding["execution_authorized"]?.GetValue<bool>() is not false
-            || binding["may_execute_mutation"]?.GetValue<bool>() is not false
-            || binding["requires_executor_authorization"]?.GetValue<bool>() is not true)
+        foreach (var name in new[] { "handoff_digest", "resolver_receipt_sha256" })
+        {
+            var digest = Required(name);
+            if (digest.Length != 64 || digest.Any(ch => !Uri.IsHexDigit(ch)))
+                throw CadException.Invalid($"source_binding.{name} must be a SHA-256 hex digest.");
+        }
+        bool Flag(string name, bool expected) =>
+            binding[name] is JsonValue node && node.TryGetValue<bool>(out var value) && value == expected;
+        if (!Flag("execution_authorized", false)
+            || !Flag("may_execute_mutation", false)
+            || !Flag("requires_executor_authorization", true))
             throw CadException.Invalid("Ontology source binding must remain non-authorizing.");
     }
 
