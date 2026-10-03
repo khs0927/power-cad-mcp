@@ -68,6 +68,44 @@ public sealed class HsSteelToolsTests
         return root;
     }
 
+    private static JsonObject CatalogHandoff()
+    {
+        var root = new JsonObject
+        {
+            ["schema"] = "hs-steel-section-catalog/1",
+            ["producer"] = "khs0927/hs-steel-cad",
+            ["family"] = "H-BEAM",
+            ["source_file"] = "H-BEAM.dat",
+            ["source_sha256"] = new string('a', 64),
+            ["encoding"] = "cp949",
+            ["validation_status"] = "PASS",
+            ["capability_scope"] = "single_family_file",
+            ["global_legacy_catalog_verified"] = false,
+            ["read_rows"] = 2,
+            ["accepted_rows"] = 2,
+            ["quarantined_rows"] = 0,
+            ["query"] = null,
+            ["returned_rows"] = 1,
+            ["rows"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["spec"] = "H100x100x6x8",
+                    ["shape"] = "H",
+                    ["dimensions_mm"] = new JsonArray(100, 100, 6, 8, 10, 0),
+                    ["unit_weight_kg_m"] = 17.2,
+                    ["paint_area_m2_m"] = 0.75,
+                    ["aci_color"] = 3,
+                    ["family"] = "H-BEAM",
+                },
+            },
+            ["execution_authorized"] = false,
+            ["may_execute_mutation"] = false,
+        };
+        root["contract_digest"] = Digest(root);
+        return root;
+    }
+
     private static JsonElement Element(JsonObject node)
     {
         using var document = JsonDocument.Parse(node.ToJsonString());
@@ -126,5 +164,58 @@ public sealed class HsSteelToolsTests
         Assert.Equal(2, result["chunk_count"]!.GetValue<int>());
         Assert.Equal(200, result["steps"]![0]!["params"]!["entities"]!.AsArray().Count);
         Assert.Single(result["steps"]![1]!["params"]!["entities"]!.AsArray());
+    }
+
+
+    [Fact]
+    public void Valid_section_catalog_handoff_stays_read_only_and_family_scoped()
+    {
+        var result = JsonNode.Parse(
+            new HsSteelTools().PrepareCatalog(Element(CatalogHandoff())))!.AsObject();
+
+        Assert.Equal("power-cad-hs-steel-catalog-prepared/1", result["schema"]!.GetValue<string>());
+        Assert.True(result["source_digest_verified"]!.GetValue<bool>());
+        Assert.Equal("H-BEAM", result["family"]!.GetValue<string>());
+        Assert.Equal(1, result["row_count"]!.GetValue<int>());
+        Assert.False(result["global_legacy_catalog_verified"]!.GetValue<bool>());
+        Assert.False(result["execution_authorized"]!.GetValue<bool>());
+        Assert.False(result["may_execute_mutation"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void Section_catalog_digest_tampering_is_rejected()
+    {
+        var handoff = CatalogHandoff();
+        handoff["rows"]![0]!["unit_weight_kg_m"] = 99.0;
+
+        var error = Assert.Throws<McpException>(
+            () => new HsSteelTools().PrepareCatalog(Element(handoff)));
+        Assert.Contains("contract_digest", error.Message);
+    }
+
+    [Fact]
+    public void Section_catalog_rejects_invalid_physical_values_even_with_valid_digest()
+    {
+        var handoff = CatalogHandoff();
+        handoff["rows"]![0]!["unit_weight_kg_m"] = -1.0;
+        handoff.Remove("contract_digest");
+        handoff["contract_digest"] = Digest(handoff);
+
+        var error = Assert.Throws<McpException>(
+            () => new HsSteelTools().PrepareCatalog(Element(handoff)));
+        Assert.Contains("invalid physical", error.Message);
+    }
+
+    [Fact]
+    public void Section_catalog_cannot_claim_global_legacy_verification()
+    {
+        var handoff = CatalogHandoff();
+        handoff["global_legacy_catalog_verified"] = true;
+        handoff.Remove("contract_digest");
+        handoff["contract_digest"] = Digest(handoff);
+
+        var error = Assert.Throws<McpException>(
+            () => new HsSteelTools().PrepareCatalog(Element(handoff)));
+        Assert.Contains("validation/safety", error.Message);
     }
 }
