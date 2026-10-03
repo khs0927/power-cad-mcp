@@ -25,6 +25,24 @@ python -m power_cad_mcp.census 건축,구조1.dxf --standard docs/standards/floo
 | `layout:<이름>` | 종이 공간 레이아웃 |
 | `block:<이름>` | 블록 정의 안(중첩 포함). 삽입 수 0이면 미사용 블록 |
 
+## 1-1. Ontology와 대조 (선택, 읽기 전용)
+도면이 Ontology(건물 데이터 저장소)에도 들어가 있으면 두 인벤토리가 같은 파일을 말하는지 확인한다. `POWERCAD_ONTOLOGY_URL`이 설정돼 있어야 한다.
+
+- MCP 도구 `ontology_census_check {path, standard}` — census를 새로 돌려 대조. 1절에서 만든 결과를 쓰려면 `{path, census_json:"census/건축구조1/census.json"}`. 여러 프로젝트에 같은 파일이 있으면 `project_id`로 고른다.
+- 파일을 쓰지 않고 도면도 바꾸지 않는다.
+
+| 결과 항목 | 뜻 | 할 일 |
+| --- | --- | --- |
+| `ingested: false` | Ontology에 이 파일(파일명 기준, .dwg = .dxf)이 없다 | 대조할 것 없음. 필요하면 Ontology 쪽에서 수집 |
+| `handles.only_in_ontology` | Ontology 요소의 핸들이 파일에 없다 | 수집 후 도면이 바뀌었거나 다른 리비전. `warnings`의 수정 시각 확인 후 재수집 |
+| `handles.only_in_census_*` | Ontology가 요소로 만들지 않은 객체(치수·일반 선·해치 등) | 결함 아님. 문·창이 여기 많으면 분류 누락 의심 |
+| `layers[].status` | Ontology `Layer` 행의 객체 수(레이아웃/블록 정의)와 census 비교: `equal` / `differs` / `not_in_ontology` | `differs`는 수집 후 편집 또는 파서 차이 — 핸들 결과와 같이 본다 |
+| `classes[]` | 클래스별 Ontology 요소 수 옆에 같은 레이어의 census 객체 수, ZIUM 표준 레이어(DOOR·WIN/WINBAR·WAL1~3·STAIR·실명)의 객체 수 | **나란히 놓은 숫자일 뿐 일치 판정이 아니다**(문 하나 = LINE+ARC 2개일 수 있음). 정확한 대조는 `handles` |
+| `not_comparable` | 맞대어 볼 수 없는 것(핸들 없는 Ontology 행, 블록 내부·ATTRIB, ZIUM에서 기둥·구조벽이 섞인 COL 등)과 이유 | 억지로 맞추지 않는다 |
+
+- census.json이 `entity_index` 추가 전 버전이면 핸들·레이어 대조는 `not_comparable`로 나온다 → 1절을 다시 돌린다.
+- 도면 레이어가 ZIUM 표준에 편입되지 않았으면(`unmapped_layers`) 클래스의 ZIUM 칸은 "no layer of this drawing maps to …"로 나온다. 편입표를 채운 뒤 다시 대조한다.
+
 ## 2. 칸 닫기 체크리스트
 각 항목을 `census.md`에서 확인하고 결과를 분석 노트에 적는다. 모든 항목이 "확인함"이어야 끝난다.
 

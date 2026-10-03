@@ -143,6 +143,17 @@ class CadBackend(ABC):
     @abstractmethod
     def get_entity(self, handle: str) -> Entity: ...
 
+    def model_space_entity(self, handle: str) -> Entity | None:
+        """Read-only lookup used to resolve Ontology handles: the model-space entity, else None.
+
+        Never raises for a missing handle, a non-entity object (layer record, block definition) or an
+        entity owned by another block / layout. Backends whose get_entity is not model-space-only
+        override this."""
+        try:
+            return self.get_entity(handle)
+        except Exception:  # noqa: BLE001 - a missing/invalid handle is a result, not an error
+            return None
+
     @abstractmethod
     def delete_entities(self, handles: Sequence[str]) -> int: ...
 

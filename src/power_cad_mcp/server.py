@@ -32,6 +32,13 @@ Power CAD drives AutoCAD (live, over COM on Windows) or a headless DXF drawing.
 - Before an automation, call ontology_auto_context(task) to pull every relevant door/window/wall/space,
   detail sheet and block from the Ontology building-data store instead of asking the user to list them.
   The ontology_* tools are read-only; their results are hints, so verify against the live drawing.
+- Ontology handles are only unique per drawing: before passing an element's handle to get_entity /
+  move_entities / delete_entities / set_entity_properties, call ontology_locate(element_ids) and use only
+  results with status "matched" (same source file as the open drawing, handle exists, entity plausible).
+- To place a block the Ontology knows, call ontology_block_candidates(name_or_task) and pass an
+  `insertable` entry's insert_name to insert_block; blocks only in other files are not imported.
+- To check a drawing file against the Ontology (ingested? same handles? same layer counts?), call
+  ontology_census_check(path) after drawing_census; it marks what cannot be compared as not_comparable.
 """
 
 PointArg = Annotated[list[float], Field(min_length=2, max_length=3, description="[x, y] or [x, y, z]")]
@@ -85,8 +92,62 @@ class PowerCad:
             self._ontology = ontology.OntologyClient(s.ontology_url, s.ontology_timeout, s.ontology_token)
         return self._ontology
 
-    def auto_context(self, task: str, drawing: str | None = None, limit: int = 20) -> dict[str, Any]:
-        return ontology.auto_context(self.ontology, task, drawing, limit=limit)
+    def open_drawing(self) -> dict[str, Any] | None:
+        """The backend's drawing_info, or None when no drawing is reachable (e.g. AutoCAD not running)."""
+        try:
+            info = self.backend.drawing_info()
+        except Exception:  # noqa: BLE001 - any backend failure just means "no open drawing"
+            return None
+        return info if isinstance(info, dict) and (info.get("name") or info.get("path")) else None
+
+    def lookup(self, handle: str) -> dict[str, Any] | None:
+        """Read one model-space entity by handle; None when there is none. Read-only."""
+        try:
+            return self.backend.model_space_entity(handle)
+        except Exception:  # noqa: BLE001 - a missing/invalid handle is a result, not an error
+            return None
+
+    def auto_context(
+        self,
+        task: str,
+        drawing: str | None = None,
+        limit: int = 20,
+        *,
+        k: int = 10,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        return ontology.auto_context(
+            self.ontology,
+            task,
+            drawing,
+            limit=limit,
+            k=k,
+            project_id=project_id,
+            open_drawing=self.open_drawing(),
+        )
+
+    def locate(self, element_ids: list[str]) -> dict[str, Any]:
+        return ontology.locate(self.ontology, element_ids, self.open_drawing(), self.lookup)
+
+    def drawing_blocks(self) -> list[dict[str, Any]] | None:
+        """The open drawing's block definitions, or None when they cannot be read. Read-only."""
+        try:
+            blocks = self.backend.list_blocks()
+        except Exception:  # noqa: BLE001 - no drawing / AutoCAD gone: report "unknown", not an error
+            return None
+        return blocks if isinstance(blocks, list) else None
+
+    def block_candidates(
+        self, name_or_task: str, *, project_id: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        return ontology.block_candidates(
+            self.ontology,
+            name_or_task,
+            self.drawing_blocks(),
+            self.open_drawing(),
+            project_id=project_id,
+            limit=limit,
+        )
 
     def path(self, value: str, *, ext: str | None = None) -> str:
         value = os.path.expandvars(os.path.expanduser(value.strip().strip('"')))
@@ -589,12 +650,16 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
             raise CadError("auto_context needs a `task` describing the automation.")
         if auto_context is None:  # env default: only when the caller described the task
             auto_context = settings.ontology_auto_context and has_task
+        targets: dict[str, Any] | None = None
         if auto_context:
             try:
                 context = cad.auto_context(task or "")
             except ontology.OntologyError as exc:
                 # The pre-step is advisory: drawing still proceeds when the Ontology service is down.
                 context = {"available": False, "error": str(exc)}
+            else:
+                # Which of those elements can be edited by handle in the drawing that is open now.
+                targets = ontology.targets_summary(context, cad.open_drawing(), cad.lookup)
         results: list[dict[str, Any]] = []
         created = 0
         for i, item in enumerate(operations):
@@ -610,6 +675,8 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         out: dict[str, Any] = {"created": created, "failed": len(results) - created, "results": results}
         if context is not None:
             out["ontology_context"] = context
+        if targets is not None:
+            out["ontology_targets"] = targets
         return out
 
     # ------------------------------------------------------------------- blocks
@@ -913,11 +980,96 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
             str | None, Field(description="Optional sheet number / file name to focus on")
         ] = None,
         limit: Annotated[int, Field(ge=1, le=200)] = 20,
+        project_id: ProjectArg = None,
+        k: Annotated[int, Field(ge=1, le=100, description="Number of search hits to keep")] = 10,
     ) -> dict[str, Any]:
         """Pull up every relevant element for a task without the user listing them: infers element
         classes (Door/Window/Wall/Space/Column/Beam/SteelSection...), drawing categories (plan/detail/...),
         storey and marks from the text, then returns search hits, elements by class, sheets by category
-        and blocks in one bundle."""
-        return cad.auto_context(task, drawing, limit)
+        and blocks in one bundle. When a drawing is open, each hit/element carries `in_open_drawing`;
+        pass the ids to ontology_locate before editing by handle."""
+        return cad.auto_context(task, drawing, limit, k=k, project_id=project_id)
+
+    @tool(ONTOLOGY)
+    def ontology_locate(
+        element_ids: Annotated[
+            list[str], Field(min_length=1, max_length=200, description="Ontology element ids (id field)")
+        ],
+    ) -> dict[str, Any]:
+        """Map Ontology elements to live CAD handles in the open drawing, safely and read-only.
+
+        Handles are only unique per drawing, so for each id this checks that the element's source file is
+        the open drawing (case-insensitive, .dwg = .dxf), that the handle exists in model space and that
+        the entity is plausible for the element (type, layer, block). Status per id: matched,
+        unverified, mismatch, handle_missing, other_drawing or not_found. An unsaved or default-named
+        (Drawing1) open drawing never matches; full paths are compared when both sides have a folder.
+        Only `matched` handles are safe to pass to
+        get_entity / move_entities / delete_entities / set_entity_properties. Never modifies the drawing."""
+        return cad.locate(element_ids)
+
+    @tool(ONTOLOGY)
+    def ontology_block_candidates(
+        name_or_task: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="Block name or wildcard (DOOR*), or a task: '문 블록 배치' / 'place windows'",
+            ),
+        ],
+        project_id: ProjectArg = None,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> dict[str, Any]:
+        """Which Ontology blocks can be inserted into the open drawing right now, read-only.
+
+        Cross-references the Ontology block catalog (by name, or by the element classes a task names)
+        with the open drawing's block definitions (list_blocks, case-insensitive, effective names too).
+        `insertable` entries carry `insert_name`, the definition name to pass to insert_block;
+        `other_files` exist only in other drawings (see example_files) and are not imported;
+        `not_insertable` are xrefs / anonymous blocks. Never modifies the drawing."""
+        return cad.block_candidates(name_or_task, project_id=project_id, limit=limit)
+
+    @tool(ONTOLOGY)
+    def ontology_census_check(
+        path: Annotated[
+            str, Field(description="Drawing file (.dxf; .dwg needs ODA File Converter) to look up")
+        ],
+        census_json: Annotated[
+            str | None,
+            Field(description="census.json from drawing_census; omit to take the census of `path` now"),
+        ] = None,
+        project_id: ProjectArg = None,
+        standard: Annotated[
+            str | None,
+            Field(description="ZIUM floor_plan_standard.json for the class/layer mapping (census of path)"),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=500, description="Max listed handles per section")] = 50,
+    ) -> dict[str, Any]:
+        """Compare a drawing's local census with what the Ontology holds for the same file, read-only.
+
+        Reports whether the file is ingested (matched by file name, .dwg = .dxf), handles in the Ontology
+        but missing from the file (changed since ingestion) and layout entities the Ontology made no
+        element of, per-layer entity counts (Ontology Layer rows vs census) and, per class, Ontology
+        element counts beside census entities on the same layers and on the ZIUM standard layers
+        (DOOR, WIN, WAL1-3 ...). Anything that does not line up is listed under `not_comparable`.
+        Writes no file and never changes the drawing."""
+        import json
+        from pathlib import Path
+
+        from .census import census, load
+        from .census_check import census_check
+
+        src = cad.path(path)
+        if census_json:
+            report = json.loads(Path(cad.path(census_json)).read_text(encoding="utf-8"))
+            if not isinstance(report, dict) or "completeness" not in report:
+                raise ValueError(f"{census_json} is not a census.json from drawing_census")
+            source = "census_json"
+        else:
+            std = json.loads(Path(cad.path(standard)).read_text(encoding="utf-8")) if standard else None
+            report = census(load(Path(src)), std)
+            source = "file"
+        return census_check(
+            cad.ontology, src, report, project_id=project_id, census_source=source, limit=limit
+        )
 
     return mcp

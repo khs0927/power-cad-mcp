@@ -62,6 +62,10 @@ class Entity:
     def ObjectName(self):  # noqa: N802
         return self.object_name
 
+    @property
+    def OwnerID(self):  # noqa: N802
+        return self.owner.ObjectID
+
     def Update(self):  # noqa: N802
         self._doc.updates += 1
 
@@ -242,6 +246,7 @@ class Block(Collection):
         self.Origin = _v(origin)
         self.IsLayout = is_layout
         self.IsXRef = False
+        self.ObjectID = id(self)
 
     def _add(self, cls, **attrs):
         e = cls(self._doc, **attrs)

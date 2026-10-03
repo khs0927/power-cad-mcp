@@ -30,9 +30,16 @@ __all__ = [
     "OntologyError",
     "OntologyUnavailable",
     "auto_context",
+    "block_candidates",
     "compact_element",
+    "drawing_identity",
+    "drawing_key",
+    "in_drawing",
     "infer_task",
+    "locate",
+    "match_element",
     "rows",
+    "targets_summary",
 ]
 
 
@@ -183,10 +190,13 @@ class OntologyClient:
     ) -> dict[str, Any]:
         """``GET /v1/elements``. ``kind`` takes Korean aliases and commas (``Door,창호``).
 
-        The API has no storey/sheet filter, so those two are applied here, on the returned rows.
+        The API has no storey/sheet filter, so those two are applied here, on the returned rows. The
+        storey is still sent (as ``storey=2층``) so an API that learns to filter by it can do so; today it
+        ignores unknown parameters.
         """
         params = {
             "kind": kind,
+            "storey": storey_param(storey),
             "project_id": project_id,
             "text": text,
             "drawing_category": category_param(drawing_category),
@@ -263,9 +273,58 @@ class OntologyClient:
             sheets = [r for r in sheets if q.lower() in json.dumps(r, ensure_ascii=False).lower()] or sheets
         return {"items": sheets[:limit], "next_cursor": next_cursor}
 
+    def documents(
+        self,
+        accept: Callable[[dict[str, Any]], bool] | None = None,
+        *,
+        project_id: str | None = None,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Raw ``/v1/drawings`` documents (one per ingested file, with its sheets), every page read."""
+        out: list[dict[str, Any]] = []
+        cursor = None
+        for _ in range(max_pages):
+            payload = self.get("/v1/drawings", project_id=project_id, limit=MAX_PAGE, cursor=cursor)
+            out.extend(r for r in rows(payload, "drawings") if accept is None or accept(r))
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                break
+        return out
+
+    def document_elements(
+        self, document_id: str, *, project_id: str | None = None, max_rows: int = 100_000
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Every element of one ingested document (``/v1/elements?document_id=``), with properties.
+
+        Rows of other documents are dropped here too, for an API that ignores ``document_id``.
+        Returns ``(elements, truncated)``; ``truncated`` is True when ``max_rows`` stopped the paging.
+        """
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            payload = self.get(
+                "/v1/elements",
+                document_id=document_id,
+                project_id=project_id,
+                include_properties="true",
+                limit=MAX_PAGE,
+                cursor=cursor,
+            )
+            for row in rows(payload, "elements"):
+                element = compact_element(row)
+                if element.get("document_id") in (None, document_id):
+                    out.append(element)
+            cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                return out, False
+            if len(out) >= max_rows:
+                return out, True
+
     def element_context(self, element_id: str, hops: int = 1) -> Any:
         if not str(element_id).strip():
             raise OntologyError("element_id must not be empty.")
+        if set(str(element_id).strip()) == {"."}:
+            raise OntologyError(f"element_id {element_id!r} is not a valid element id.")
         quoted = urllib.parse.quote(str(element_id), safe="")
         return self.get(f"/v1/elements/{quoted}/context", hops=min(max(int(hops), 1), 2))
 
@@ -356,6 +415,21 @@ def normalize_storey(value: str) -> str:
     return text.upper()
 
 
+def storey_param(value: str | None) -> str | None:
+    """Storey as the ``storey`` query parameter, in the Korean form the drawings carry: '2F' -> '2층',
+    'B1' -> '지하1층', 'roof' -> '지붕층'. Unrecognised text is passed through unchanged."""
+    if not value or not value.strip():
+        return None
+    norm = normalize_storey(value)
+    if m := re.fullmatch(r"B(\d+)F", norm):
+        return f"지하{m.group(1)}층"
+    if norm == "RF":
+        return "지붕층"
+    if m := re.fullmatch(r"(\d+)F", norm):
+        return f"{m.group(1)}층"
+    return value.strip()
+
+
 def rows(payload: Any, *keys: str) -> list[dict[str, Any]]:
     """Pull the list of records out of a bare list or a wrapper object."""
     if isinstance(payload, list):
@@ -435,6 +509,9 @@ def compact_block(row: dict[str, Any]) -> dict[str, Any]:
             "attribute_tags": tags,
             "layers": _pick(row, "layers"),
             "example_files": files[:5] if isinstance(files, list) else files,
+            "effective_names": _pick(row, "effective_names"),
+            "is_xref": bool(row.get("is_xref")) or None,
+            "is_anonymous": bool(row.get("is_anonymous")) or None,
         }
     )
 
@@ -594,6 +671,21 @@ def infer_task(task: str) -> dict[str, Any]:
     }
 
 
+def search_keywords(hints: dict[str, Any], drawing: str | None = None) -> list[tuple[str, str | None]]:
+    """Short ``(query, kind)`` pairs that the phrase-matching ``/v1/search`` can hit.
+
+    Marks and the drawing go out unscoped (``kind=None``); a class word goes out with its class as the
+    ``kind`` filter, so one-syllable words (창, 실, 보) cannot match 창고 / 화장실 / 보일러.
+    """
+    pairs: list[tuple[str, str | None]] = [(m, None) for m in hints.get("marks") or [] if m]
+    if drawing:
+        pairs.append((drawing, None))
+    for cls in hints.get("classes") or []:
+        pairs.append((_KIND_WORDS.get(cls, cls).split()[0], cls))
+    seen: set[tuple[str, str | None]] = set()
+    return [p for p in pairs if not (p in seen or seen.add(p))]
+
+
 # ------------------------------------------------------------------ composite
 def auto_context(
     client: OntologyClient,
@@ -602,14 +694,22 @@ def auto_context(
     *,
     limit: int = 20,
     k: int = 10,
+    project_id: str | None = None,
+    open_drawing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect everything an automation needs for ``task`` in one bundle.
+
+    ``open_drawing`` is the CAD backend's ``drawing_info()``; when given, every search hit and element
+    is tagged ``in_open_drawing`` (its ``source_file`` is the open drawing) so the agent knows which
+    handles it can act on directly.
 
     Raises :class:`OntologyUnavailable` if the service is down; any other per-endpoint failure is
     reported under ``warnings`` so one missing endpoint does not hide the rest.
     """
     if not (task or "").strip():
         raise OntologyError("task must not be empty.")
+    drawing = (drawing or "").strip() or None
+    project_id = (project_id or "").strip() or None
     hints = infer_task(task)
     warnings: list[str] = []
 
@@ -622,9 +722,37 @@ def auto_context(
             warnings.append(f"{label}: {exc}")
             return None
 
-    bundle: dict[str, Any] = {"task": task, "drawing": drawing, "inferred": hints}
+    storey = hints["storey"]
+
+    def scoped_search(label: str, query: str, kind: str | None) -> list[dict[str, Any]]:
+        """Search with the inferred kind/storey; the API matches storey exactly and many drawings carry
+        no storey at all, so an empty storey-scoped result is retried without it."""
+        found = attempt(label, client.search, query, k, kind=kind, storey=storey, project_id=project_id)
+        if not found and storey:
+            found = attempt(label, client.search, query, k, kind=kind, project_id=project_id)
+        return found or []
+
+    bundle: dict[str, Any] = {"task": task, "drawing": drawing, "project_id": project_id, "inferred": hints}
     query = task if not drawing else f"{task} {drawing}"
-    bundle["search"] = attempt("search", client.search, query, k) or []
+    single_kind = hints["classes"][0] if len(hints["classes"]) == 1 else None
+    found_hits = scoped_search("search", query, single_kind)
+    if not found_hits and single_kind:
+        found_hits = attempt("search", client.search, query, k, project_id=project_id) or []
+    if not found_hits:
+        # The API matches the whole query as one phrase (ILIKE / trigram), so a task sentence rarely
+        # hits without real embeddings; retry with the marks, drawing and one word per class.
+        queried: list[str] = []
+        for word, kind in search_keywords(hints, drawing):
+            queried.append(word if not kind else f"{word} ({kind})")
+            found_hits.extend(scoped_search(f"search[{word}]", word, kind))
+            if len(_dedupe(found_hits)) >= k:
+                break
+        if queried:
+            warnings.append(
+                "search: the whole-task search returned nothing or failed; "
+                f"used keywords {queried}" + ("." if found_hits else " (no hit either).")
+            )
+    bundle["search"] = _dedupe(found_hits)[:k]
 
     mark_list: list[str | None] = list(hints["marks"]) or [None]
     elements: dict[str, list[dict[str, Any]]] = {}
@@ -635,15 +763,16 @@ def auto_context(
                 f"elements[{cls}]",
                 client.elements,
                 cls,
-                storey=hints["storey"],
+                project_id=project_id,
+                storey=storey,
                 sheet=drawing,
                 text=mark,
                 limit=limit,
             )
             found.extend(page["items"] if page else [])
-        if not found and (hints["storey"] or drawing or hints["marks"]):
+        if not found and (storey or drawing or hints["marks"]):
             # The filters are best-effort hints; fall back to the whole class rather than nothing.
-            relaxed = attempt(f"elements[{cls}]", client.elements, cls, limit=limit)
+            relaxed = attempt(f"elements[{cls}]", client.elements, cls, project_id=project_id, limit=limit)
             if relaxed and relaxed["items"]:
                 warnings.append(
                     f"elements[{cls}]: no match for storey/sheet/mark filters; showing all {cls}."
@@ -654,10 +783,12 @@ def auto_context(
 
     drawings: dict[str, list[dict[str, Any]]] = {}
     for cat in hints["drawing_categories"]:
-        page = attempt(f"drawings[{cat}]", client.drawings, cat, q=drawing, limit=limit)
+        page = attempt(
+            f"drawings[{cat}]", client.drawings, cat, q=drawing, project_id=project_id, limit=limit
+        )
         drawings[cat] = page["items"] if page else []
     if drawing and not drawings:
-        page = attempt("drawings", client.drawings, None, q=drawing, limit=limit)
+        page = attempt("drawings", client.drawings, None, q=drawing, project_id=project_id, limit=limit)
         drawings["match"] = page["items"] if page else []
     bundle["drawings"] = drawings
 
@@ -665,16 +796,491 @@ def auto_context(
     if hints["include_blocks"]:
         block_classes = [c for c in hints["classes"] if c in ("Door", "Window", "Furniture")]
         for cls in block_classes or ["all"]:
-            page = attempt(f"blocks[{cls}]", client.blocks, None if cls == "all" else cls, limit=limit)
+            page = attempt(
+                f"blocks[{cls}]",
+                client.blocks,
+                None if cls == "all" else cls,
+                project_id=project_id,
+                limit=limit,
+            )
             blocks[cls] = page["items"] if page else []
     bundle["blocks"] = blocks
 
-    bundle["counts"] = {
+    counts: dict[str, Any] = {
         "search": len(bundle["search"]),
         "elements": {cls: len(v) for cls, v in elements.items()},
         "drawings": {cat: len(v) for cat, v in drawings.items()},
         "blocks": {cat: len(v) for cat, v in blocks.items()},
     }
+    if open_drawing:
+        bundle["open_drawing"] = _drawing_label(open_drawing)
+        tagged = [*bundle["search"], *(el for items in elements.values() for el in items)]
+        for item in tagged:
+            item["in_open_drawing"] = bool(in_drawing(item.get("source_file"), open_drawing))
+        counts["in_open_drawing"] = len(
+            {item.get("id") or id(item) for item in tagged if item["in_open_drawing"]}
+        )
+    bundle["counts"] = counts
     bundle["warnings"] = warnings
     bundle["read_only"] = True
     return bundle
+
+
+# --------------------------------------------------------------- ontology -> CAD
+# Ontology rows carry the DWG/DXF handle the element was parsed from, but a handle is only unique
+# inside one drawing. Before an edit tool touches it, the element's source file must be the drawing
+# that is open now, the handle must exist there, and the entity must look like the element.
+CAD_EXTENSIONS = (".dwg", ".dxf", ".dwt", ".dws")
+
+_GEOMETRY = frozenset(
+    {"LINE", "ARC", "CIRCLE", "ELLIPSE", "LWPOLYLINE", "POLYLINE", "SPLINE", "INSERT", "HATCH", "SOLID"}
+    | {"MLINE", "3DFACE", "REGION"}
+)
+_TEXT = frozenset({"TEXT", "MTEXT", "ATTRIB", "ATTDEF"})
+# Element classes whose evidence may legitimately be a text entity (room names, labels, marks).
+_TEXT_CLASSES = frozenset(
+    {"Space", "Room", "Text", "Annotation", "Label", "Note", "Tag", "Mark", "TitleBlock", "DrawingTitle"}
+    | {"Grid", "GridLine"}
+)
+# Entity types that are never a building element.
+_NOT_ELEMENT = frozenset(
+    {"DIMENSION", "LEADER", "MLEADER", "MULTILEADER", "VIEWPORT", "XLINE", "RAY", "IMAGE", "OLE2FRAME"}
+    | {"WIPEOUT"}
+)
+_PHYSICAL_CLASSES = frozenset(
+    {"Door", "Window", "Wall", "Column", "Beam", "SteelSection", "Stair", "Slab", "Furniture", "Opening"}
+    | {"CurtainWall"}
+)
+
+
+def drawing_key(name: Any) -> str | None:
+    """``'C:\\Proj\\A-201.DWG'`` / ``'a-201.dxf'`` / ``'A-201'`` -> ``'a-201'``: basename, case-folded,
+    without a CAD extension, so the DWG an element was parsed from matches the DXF copy that is open."""
+    text = str(name or "").strip().strip('"')
+    if not text:
+        return None
+    base = re.split(r"[\\/]", text)[-1].strip().lower()
+    for ext in CAD_EXTENSIONS:
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base or None
+
+
+def _drawing_keys(open_drawing: dict[str, Any] | None) -> set[str]:
+    if not isinstance(open_drawing, dict):
+        return set()
+    keys = (drawing_key(open_drawing.get("name")), drawing_key(open_drawing.get("path")))
+    return {key for key in keys if key}
+
+
+def _drawing_label(open_drawing: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty({"name": open_drawing.get("name"), "path": open_drawing.get("path")})
+
+
+# AutoCAD's names for a new, never-saved drawing (Drawing1.dwg ...): such a name proves nothing.
+_DEFAULT_NAME = re.compile(r"^drawing\d*$", re.IGNORECASE)
+UNPROVABLE_NOTE = "open drawing is unsaved/default-named; cannot prove it is the source file"
+
+
+def _folder_and_key(name: Any) -> tuple[str | None, str | None]:
+    """``'C:\\Proj\\A-201.DWG'`` -> ``('c:/proj', 'a-201')``; the folder is None for a bare file name."""
+    text = str(name or "").strip().strip('"')
+    key = drawing_key(text)
+    norm = re.sub(r"/+", "/", text.replace("\\", "/"))
+    if not key or "/" not in norm:
+        return None, key
+    return norm.rsplit("/", 1)[0].lower() or "/", key
+
+
+def drawing_identity(source_file: Any, open_drawing: dict[str, Any] | None) -> tuple[bool | None, str | None]:
+    """Is ``source_file`` the open drawing? ``(True/False/None, note)``; None = cannot tell.
+
+    With a folder on both sides the normalised full paths are compared (folder + name, case-insensitive,
+    ``\\`` = ``/``, repeated ``/`` collapsed, ``.dwg`` = ``.dxf``); otherwise the base names. When the
+    names match but the open drawing has no saved path or a default name (``Drawing1``), that is no
+    proof: ``(None, UNPROVABLE_NOTE)``.
+    """
+    keys = _drawing_keys(open_drawing)
+    if not keys:
+        return None, "no drawing is open"
+    src_folder, src_key = _folder_and_key(source_file)
+    if not src_key:
+        return None, "the element has no source_file"
+    path = open_drawing.get("path") if isinstance(open_drawing, dict) else None
+    open_folder, path_key = _folder_and_key(path)
+    full = bool(src_folder and open_folder)  # folder on both sides: the full path decides
+    same = (src_folder, src_key) == (open_folder, path_key) if full else src_key in keys
+    if not same:
+        return False, None
+    if not path or any(_DEFAULT_NAME.match(k) for k in keys):
+        return None, UNPROVABLE_NOTE
+    return True, None
+
+
+def in_drawing(source_file: Any, open_drawing: dict[str, Any] | None) -> bool | None:
+    """True when ``source_file`` is the open drawing, False when it is another one, None when unknown."""
+    return drawing_identity(source_file, open_drawing)[0]
+
+
+def entity_summary(entity: dict[str, Any]) -> dict[str, Any]:
+    keys = ("handle", "type", "layer", "name", "text", "insert", "center", "start", "end")
+    return {key: entity[key] for key in keys if entity.get(key) not in (None, "")}
+
+
+def plausibility(element: dict[str, Any], entity: dict[str, Any]) -> list[str]:
+    """Reasons the live entity does not look like the Ontology element (empty list = plausible)."""
+    reasons: list[str] = []
+    etype = str(entity.get("type") or "").upper()
+    cls = str(element.get("class") or "")
+    if cls in _PHYSICAL_CLASSES or cls in _TEXT_CLASSES:
+        allowed = _GEOMETRY | _TEXT if cls in _TEXT_CLASSES else _GEOMETRY
+        if etype and etype not in allowed:
+            reasons.append(f"a {etype} entity is not a plausible {cls}")
+    elif etype in _NOT_ELEMENT and cls and cls not in ("Dimension", "Annotation", "Viewport"):
+        reasons.append(f"a {etype} entity is not a plausible {cls}")
+    block = str(element.get("block_name") or "")
+    if block and etype and etype != "INSERT":
+        reasons.append(f"element is block {block!r} but the entity is a {etype}")
+    elif block and etype == "INSERT":
+        name = str(entity.get("name") or "")
+        # Dynamic/anonymous references (*U12) carry the effective name only in the Ontology row.
+        if name and not name.startswith("*") and name.lower() != block.lower():
+            reasons.append(f"element is block {block!r} but the entity inserts {name!r}")
+    layer = str(element.get("layer") or "")
+    live_layer = str(entity.get("layer") or "")
+    if layer and live_layer and layer.lower() != live_layer.lower():
+        reasons.append(f"element is on layer {layer!r} but the entity is on {live_layer!r}")
+    return reasons
+
+
+def positive_signals(element: dict[str, Any], entity: dict[str, Any]) -> list[str]:
+    """What ties the live entity to the element: a known class of a fitting entity type, the same layer,
+    or the same block name. :func:`match_element` reports ``unverified`` when there is none."""
+    signals: list[str] = []
+    etype = str(entity.get("type") or "").upper()
+    cls = str(element.get("class") or "")
+    if cls in _PHYSICAL_CLASSES or cls in _TEXT_CLASSES:
+        signals.append("class")
+    layer = str(element.get("layer") or "")
+    if layer and layer.lower() == str(entity.get("layer") or "").lower():
+        signals.append("layer")
+    block = str(element.get("block_name") or "")
+    name = str(entity.get("name") or "")
+    if block and etype == "INSERT" and (name.lower() == block.lower() or name.startswith("*")):
+        signals.append("block")
+    return signals
+
+
+def match_element(
+    element: dict[str, Any] | None,
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+    *,
+    element_id: str | None = None,
+) -> dict[str, Any]:
+    """Decide whether an Ontology element can be acted on in the open drawing. Never edits anything.
+
+    ``lookup(handle)`` returns the live entity dict or None when the handle does not exist.
+    Status: ``matched`` (same saved drawing, handle exists, entity plausible with at least one positive
+    signal), ``unverified`` (handle exists and nothing contradicts, but nothing ties the entity to the
+    element either), ``mismatch`` (handle exists but the entity does not look like the element),
+    ``handle_missing`` (same drawing, no such entity / no handle recorded), ``other_drawing`` (another
+    file, or the open drawing is unknown / unsaved / default-named) or ``not_found``. Only ``matched``
+    is actionable.
+    """
+    label = _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None
+    if not element:
+        return _drop_empty({"element_id": element_id, "status": "not_found", "open_drawing": label})
+    handle = str(element.get("handle") or "").strip() or None
+    out: dict[str, Any] = {
+        "element_id": element.get("id") or element_id,
+        "class": element.get("class"),
+        "name": element.get("name"),
+        "handle": handle,
+        "source_file": element.get("source_file"),
+        "sheet": element.get("sheet"),
+        "open_drawing": label,
+    }
+    same, note = drawing_identity(element.get("source_file"), open_drawing)
+    if not same:
+        return _drop_empty(out | {"status": "other_drawing", "note": note})
+    if not handle:
+        return _drop_empty(out | {"status": "handle_missing", "note": "the element has no handle"})
+    entity = lookup(handle)
+    if not entity:
+        note = "no model-space entity with this handle in the open drawing"
+        sheet = str(element.get("sheet") or "")
+        if sheet and sheet.lower() != "model":
+            note += f" (the element was parsed from layout {sheet!r})"
+        return _drop_empty(out | {"status": "handle_missing", "note": note})
+    out["entity"] = entity_summary(entity)
+    reasons = plausibility(element, entity)
+    if reasons:
+        return _drop_empty(out | {"status": "mismatch", "reasons": reasons})
+    if not positive_signals(element, entity):
+        note = "nothing ties the entity to the element (no known class, matching layer or block name)"
+        return _drop_empty(out | {"status": "unverified", "note": note})
+    return _drop_empty(out | {"status": "matched"})
+
+
+def element_of(payload: Any) -> dict[str, Any] | None:
+    """The element row inside an ``/v1/elements/{id}/context`` answer (or a bare element row)."""
+    if isinstance(payload, dict):
+        row = payload.get("element") if isinstance(payload.get("element"), dict) else payload
+        element = compact_element(row)
+        return element if element.get("id") else None
+    return None
+
+
+def locate(
+    client: OntologyClient,
+    element_ids: Iterable[str],
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+) -> dict[str, Any]:
+    """Fetch each element and :func:`match_element` it against the open drawing (read-only)."""
+    results = []
+    for raw_id in _unique(str(i).strip() for i in element_ids if str(i).strip()):
+        try:
+            element = element_of(client.element_context(raw_id, hops=1))
+            error = None
+            if element is not None and str(element.get("id")) != raw_id:
+                element, error = None, f"API returned element {element.get('id')}"
+        except OntologyUnavailable:
+            raise
+        except OntologyError as exc:
+            element, error = None, str(exc)
+        result = match_element(element, open_drawing, lookup, element_id=raw_id)
+        if error and result["status"] == "not_found":
+            result["error"] = error
+        results.append(result)
+    return _locate_report(results, open_drawing)
+
+
+def _locate_report(results: list[dict[str, Any]], open_drawing: dict[str, Any] | None) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return {
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": counts,
+        "matched_handles": [r["handle"] for r in results if r["status"] == "matched"],
+        "results": results,
+        "read_only": True,
+    }
+
+
+def targets_summary(
+    bundle: dict[str, Any],
+    open_drawing: dict[str, Any] | None,
+    lookup: Callable[[str], dict[str, Any] | None],
+    *,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Locate the elements an auto_context bundle already carries (no extra Ontology calls).
+
+    Only elements of the open drawing are looked up; the rest are just counted as ``other_drawing``.
+    Returns the matched handles (with class/name/entity type) the agent can pass to the edit tools.
+    """
+    by_class = (bundle.get("elements") or {}).values()
+    elements = [*(bundle.get("search") or []), *(e for items in by_class for e in items)]
+    seen: set[Any] = set()
+    counts: dict[str, int] = {}
+    targets: list[dict[str, Any]] = []
+    other: list[str] = []
+    for element in elements:
+        key = element.get("id") or (element.get("source_file"), element.get("handle"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result = match_element(element, open_drawing, lookup)
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+        if result["status"] == "matched" and len(targets) < limit:
+            entity = result.get("entity") or {}
+            targets.append(
+                _drop_empty(
+                    {
+                        "element_id": result.get("element_id"),
+                        "class": result.get("class"),
+                        "name": result.get("name"),
+                        "handle": result["handle"],
+                        "type": entity.get("type"),
+                        "layer": entity.get("layer"),
+                    }
+                )
+            )
+        elif result["status"] in ("mismatch", "handle_missing", "unverified") and len(other) < limit:
+            other.append(f"{result.get('element_id')}: {result['status']}")
+    out: dict[str, Any] = {
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": counts,
+        "targets": targets,
+    }
+    if other:
+        out["not_actionable"] = other
+    return out
+
+
+# ------------------------------------------------------------- ontology blocks -> CAD
+def _block_query_matches(name: str, query: str) -> bool:
+    """Block name vs. a ``name_like`` query the way the API reads it: wildcards, else a substring."""
+    name, query = name.lower(), query.lower()
+    if any(c in query for c in "*?%"):
+        pattern = re.escape(query).replace(r"\*", ".*").replace(r"\?", ".").replace("%", ".*")
+        return re.fullmatch(pattern, name) is not None
+    return query in name
+
+
+def block_candidates(
+    client: OntologyClient,
+    name_or_task: str,
+    drawing_blocks: list[dict[str, Any]] | None,
+    open_drawing: dict[str, Any] | None = None,
+    *,
+    project_id: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Cross-reference Ontology blocks with the block definitions of the open drawing (read-only).
+
+    ``name_or_task`` is a block name / wildcard (``DOOR*``) or a task sentence (``'문 블록 배치'``) whose
+    element classes select blocks by what their instances were classified as. ``drawing_blocks`` is the
+    backend's ``list_blocks()`` (None when it could not be read). Names compare case-insensitively, and a
+    block's effective names count too, since AutoCAD block names are case-insensitive and dynamic blocks
+    are stored under anonymous names.
+
+    Returns ``insertable`` (defined in the open drawing: pass ``insert_name`` to insert_block),
+    ``other_files`` (only defined in other drawings, see ``example_files``; never imported from here),
+    ``not_insertable`` (xrefs / anonymous blocks) and, when the drawing's blocks are unknown, ``unverified``.
+    """
+    text = (name_or_task or "").strip()
+    if not text:
+        raise OntologyError("name_or_task must not be empty.")
+    project_id = (project_id or "").strip() or None
+    limit = min(max(int(limit), 1), MAX_PAGE)
+    hints = infer_task(text)
+    warnings: list[str] = []
+
+    queries: list[tuple[str, str | None, str | None]] = []
+    if not re.search(r"\s", text):
+        queries.append((f"name_like={text}", None, text))
+    if not any(c in text for c in "*?%"):  # an explicit wildcard pattern is a name, not a task
+        queries.extend((f"category={cls}", cls, None) for cls in hints["classes"])
+    if not queries:
+        queries.append(("all", None, None))
+        warnings.append("no block name or element class recognised in the text; listing all blocks.")
+
+    found: dict[str, dict[str, Any]] = {}
+    for label, category, q in queries:
+        try:
+            page = client.blocks(category, q, project_id=project_id, limit=limit)
+        except OntologyUnavailable:
+            raise
+        except OntologyError as exc:
+            warnings.append(f"blocks[{label}]: {exc}")
+            continue
+        for block in page["items"]:
+            if block.get("name"):
+                found.setdefault(str(block["name"]), block)
+
+    live: dict[str, dict[str, Any]] = {}
+    for entry in drawing_blocks or []:
+        if isinstance(entry, dict) and entry.get("name"):
+            live.setdefault(str(entry["name"]).lower(), entry)
+    if drawing_blocks is None:
+        warnings.append("the open drawing's block table could not be read; nothing is marked insertable.")
+
+    insertable: list[dict[str, Any]] = []
+    other_files: list[dict[str, Any]] = []
+    not_insertable: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for name, block in found.items():
+        info = _drop_empty(
+            {
+                "ontology_name": name,
+                "category": block.get("category"),
+                "instance_count": block.get("instance_count"),
+                "attribute_tags": block.get("attribute_tags"),
+                "layers": block.get("layers"),
+                "example_files": block.get("example_files"),
+            }
+        )
+        names = _unique([name, *(str(n) for n in block.get("effective_names") or [])])
+        hit = next((live[n.lower()] for n in names if n.lower() in live), None)
+        if block.get("is_xref"):
+            not_insertable.append(info | {"reason": "external reference (xref), not a block to insert"})
+        elif hit is not None and hit.get("xref"):
+            used.add(str(hit["name"]).lower())
+            not_insertable.append(
+                info
+                | {"reason": f"the open drawing's definition {hit['name']!r} is an external reference (xref)"}
+            )
+        elif hit is not None:
+            used.add(str(hit["name"]).lower())
+            insertable.append(
+                _drop_empty(
+                    info
+                    | {
+                        "insert_name": hit["name"],
+                        "base_point": hit.get("base_point"),
+                        "entity_count": hit.get("entity_count"),
+                    }
+                )
+            )
+        elif name.startswith("*") and len(names) == 1:
+            not_insertable.append(info | {"reason": "anonymous block without an effective name"})
+        elif drawing_blocks is None:
+            unverified.append(info)
+        else:
+            files = block.get("example_files") or []
+            files = [files] if isinstance(files, str) else files
+            note = "not defined in the open drawing; it exists only in the files listed in example_files"
+            if any(in_drawing(f, open_drawing) for f in files):
+                note = (
+                    "the Ontology parsed it from this drawing, but the definition is not in it now "
+                    "(purged or renamed since ingestion?)"
+                )
+            other_files.append(info | {"note": note})
+
+    # Definitions present in the drawing that match the queried name but the Ontology does not know.
+    name_query = next((q for _, _, q in queries if q), None)
+    if name_query:
+        for key, entry in live.items():
+            if key not in used and not key.startswith("*") and _block_query_matches(key, name_query):
+                if entry.get("xref"):
+                    continue
+                insertable.append(
+                    _drop_empty(
+                        {
+                            "insert_name": entry["name"],
+                            "base_point": entry.get("base_point"),
+                            "entity_count": entry.get("entity_count"),
+                            "note": "defined in the open drawing; not in the Ontology",
+                        }
+                    )
+                )
+
+    out: dict[str, Any] = {
+        "query": text,
+        "project_id": project_id,
+        "inferred": {"classes": hints["classes"]},
+        "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
+        "counts": {
+            "ontology_blocks": len(found),
+            "insertable": len(insertable),
+            "other_files": len(other_files),
+            "not_insertable": len(not_insertable),
+        },
+        "insertable": insertable[:limit],
+        "other_files": other_files[:limit],
+        "not_insertable": not_insertable[:limit],
+    }
+    if unverified:
+        out["unverified"] = unverified[:limit]
+        out["counts"]["unverified"] = len(unverified)
+    if insertable:
+        out["next_step"] = "insert_block(name=<insert_name>, insert=[x, y]) with one of `insertable`"
+    out["warnings"] = warnings
+    out["read_only"] = True
+    return out

@@ -29,6 +29,7 @@ ICadGateway gateway = options.Simulate
 builder.Services.AddSingleton<ICadGateway>(new DocumentBoundGateway(gateway));
 builder.Services.AddSingleton<IOntologyContextClient>(ContextClientFactory.FromEnvironment(Environment.GetEnvironmentVariable));
 builder.Services.AddSingleton<OntologyCandidateStore>();
+builder.Services.AddSingleton(OntologyRestClient.FromEnvironment(Environment.GetEnvironmentVariable));
 builder.Services.AddSingleton<SnapshotStore>();
 builder.Services.AddSingleton(new PlanStore());
 
@@ -41,6 +42,7 @@ builder.Services
     .WithStdioServerTransport()
     .WithTools<CadTools>()
     .WithTools<OntologyContextTools>()
+    .WithTools<OntologyRestTools>()
     .WithTools<SnapshotTools>()
     .WithTools<PlanTools>()
     .WithTools<ReviewTools>();

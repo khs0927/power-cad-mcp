@@ -699,6 +699,18 @@ class ComBackend(CadBackend):
     def get_entity(self, handle):
         return self._describe(self._obj(handle))
 
+    @com_call(read_only=True)
+    def model_space_entity(self, handle):
+        """The model-space entity with this handle, else None (missing handle, a non-entity object such
+        as a layer record, or an entity inside a block definition / paper-space layout)."""
+        try:
+            obj = self.doc.HandleToObject(str(handle).upper())
+            if obj.OwnerID != self.doc.ModelSpace.ObjectID:
+                return None
+            return self._describe(obj)
+        except Exception:  # noqa: BLE001 - any COM failure means "no such model-space entity"
+            return None
+
     @com_call
     def delete_entities(self, handles):
         objs = self._objs(handles)
