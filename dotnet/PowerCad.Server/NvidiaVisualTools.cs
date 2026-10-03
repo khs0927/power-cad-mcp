@@ -235,35 +235,35 @@ public sealed class NvidiaVisualTools(ICadGateway gateway, IVisualReasoner reaso
         var bytes = Convert.FromBase64String(base64);
         var imageHash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-        var prompt = $"""
+        var prompt = $$"""
             Inspect this architectural CAD screenshot.
-            Mode: {mode}
-            Task: {task}
-            Expected visible change: {expectedChange ?? "not specified"}
+            Mode: {{mode}}
+            Task: {{task}}
+            Expected visible change: {{expectedChange ?? "not specified"}}
 
             Return JSON only with this schema:
-            {{
+            {
               "scene_type": "floor_plan|section|elevation|detail|schedule|unknown",
               "verdict": "PASS|REVIEW|NOT_APPLICABLE",
               "summary": "short final observation",
               "objects": [
-                {{
+                {
                   "type": "Wall|Door|Window|Column|Beam|Stair|Room|Dimension|Text|Grid|Hatch|Furniture|Equipment|Other",
                   "label": "visible label if any",
                   "bbox_norm": [0.0,0.0,1.0,1.0],
                   "confidence": 0.0,
                   "visible_evidence": "what is actually visible"
-                }}
+                }
               ],
               "issues": [
-                {{
+                {
                   "kind": "overlap|misalignment|missing|unexpected|illegible|other",
                   "severity": "info|warning|error",
                   "description": "visible issue",
                   "bbox_norm": [0.0,0.0,1.0,1.0]
-                }}
+                }
               ]
-            }}
+            }
             bbox_norm is [x_min,y_min,x_max,y_max] in image coordinates normalized to 0..1.
             Do not infer hidden CAD topology. Do not claim legal/code compliance. If uncertain use REVIEW.
             """;
