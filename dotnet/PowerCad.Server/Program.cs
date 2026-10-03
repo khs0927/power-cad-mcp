@@ -43,7 +43,8 @@ builder.Services
     .WithTools<OntologyContextTools>()
     .WithTools<SnapshotTools>()
     .WithTools<PlanTools>()
-    .WithTools<ReviewTools>();
+    .WithTools<ReviewTools>()
+    .WithTools<HsSteelTools>();
 
 await builder.Build().RunAsync();
 return 0;
