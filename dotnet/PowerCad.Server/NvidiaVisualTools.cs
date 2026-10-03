@@ -40,7 +40,9 @@ public sealed class NvidiaCosmosReasoner(
 
         var model = env("NVIDIA_COSMOS_MODEL")?.Trim();
         if (string.IsNullOrWhiteSpace(model))
-            model = "nvidia/cosmos-reason2-2b";
+            model = endpoint.Host.Equals("integrate.api.nvidia.com", StringComparison.OrdinalIgnoreCase)
+                ? "nvidia/cosmos-reason2-8b"
+                : "nvidia/cosmos-reason2-2b";
 
         var apiKey = env("NVIDIA_API_KEY")?.Trim();
         var maxTokens = 1200;
