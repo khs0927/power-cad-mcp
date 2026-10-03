@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol;
 using PowerCad.Server;
+using Xunit;
 
 namespace PowerCad.Tests;
 
