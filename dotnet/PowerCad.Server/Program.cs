@@ -27,7 +27,7 @@ ICadGateway gateway = options.Simulate
     ? new SimulatorGateway(InMemoryCadDocument.CreateSheetSample(), options.ReadOnly)
     : new PipeGateway(new DiscoveryStore(options.Home), options.Target, options.ReadOnly);
 builder.Services.AddSingleton<ICadGateway>(new DocumentBoundGateway(gateway));
-builder.Services.AddSingleton<IOntologyContextClient>(ContextClientFactory.FromEnvironment(Environment.GetEnvironmentVariable));
+builder.Services.AddSingleton<IOntologyContextClient>(ContextClientFactory.FromEnvironment(Environment.GetEnvironmentVariable));\nbuilder.Services.AddSingleton<IVisualReasoner>(_ => NvidiaCosmosReasoner.FromEnvironment(Environment.GetEnvironmentVariable));
 builder.Services.AddSingleton<OntologyCandidateStore>();
 builder.Services.AddSingleton(OntologyRestClient.FromEnvironment(Environment.GetEnvironmentVariable));
 builder.Services.AddSingleton<SnapshotStore>();
