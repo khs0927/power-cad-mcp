@@ -135,6 +135,9 @@ public sealed class SnapshotPlanTests : IDisposable
             await tools.Execute(id);
             var committed = Obj(await tools.Execute(id, false));
             Assert.Equal("Committed", committed["state"]!.GetValue<string>());
+            Assert.Equal("power-cad", committed["result"]!["executor"]!.GetValue<string>());
+            Assert.Equal(id, committed["result"]!["plan_id"]!.GetValue<string>());
+            Assert.Equal(doc.DocumentId, committed["result"]!["document_id"]!.GetValue<string>());
             Assert.Equal(new string('d', 64), committed["result"]!["source_binding_handoff_digest"]!.GetValue<string>());
             Assert.Equal(new string('a', 64), committed["result"]!["source_id"]!.GetValue<string>());
         }
