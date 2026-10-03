@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import hashlib
 import json
+from copy import deepcopy
 
 from power_cad_mcp.source_binding_acceptance import (
     BLOCKED,
