@@ -24,16 +24,18 @@ public sealed class NvidiaCosmosReasoner(
     Uri endpoint,
     string? apiKey,
     string model,
-    int maxTokens = 1200) : IVisualReasoner
+    int maxTokens = 1200,
+    bool? enabled = null) : IVisualReasoner
 {
-    public bool Enabled => !string.IsNullOrWhiteSpace(apiKey) || endpoint.IsLoopback;
+    public bool Enabled => enabled ?? (!string.IsNullOrWhiteSpace(apiKey) || endpoint.IsLoopback);
     public string Provider => "nvidia";
     public string Model => model;
 
     public static IVisualReasoner FromEnvironment(Func<string, string?> env)
     {
         var endpointText = env("NVIDIA_COSMOS_ENDPOINT")?.Trim();
-        if (string.IsNullOrWhiteSpace(endpointText))
+        var endpointConfigured = !string.IsNullOrWhiteSpace(endpointText);
+        if (!endpointConfigured)
             endpointText = "http://127.0.0.1:8000/v1/chat/completions";
         if (!Uri.TryCreate(endpointText, UriKind.Absolute, out var endpoint))
             throw new McpException("[NVIDIA_CONFIG] NVIDIA_COSMOS_ENDPOINT must be an absolute URL.");
@@ -49,7 +51,7 @@ public sealed class NvidiaCosmosReasoner(
         if (int.TryParse(env("NVIDIA_COSMOS_MAX_TOKENS"), out var parsed))
             maxTokens = Math.Clamp(parsed, 128, 4096);
 
-        return new NvidiaCosmosReasoner(new HttpClient { Timeout = TimeSpan.FromSeconds(90) }, endpoint, apiKey, model, maxTokens);
+        return new NvidiaCosmosReasoner(new HttpClient { Timeout = TimeSpan.FromSeconds(90) }, endpoint, apiKey, model, maxTokens, enabled: endpointConfigured);
     }
 
     public async Task<JsonObject> AnalyzeAsync(byte[] image, string mimeType, string prompt, CancellationToken ct)
@@ -60,7 +62,7 @@ public sealed class NvidiaCosmosReasoner(
                 ["status"] = "REQUIRES_CONFIGURATION",
                 ["provider"] = Provider,
                 ["model"] = Model,
-                ["error"] = "Run the Cosmos Reason2 NIM and set NVIDIA_COSMOS_ENDPOINT when it is not local. NVIDIA_API_KEY is only used as bearer auth for remote endpoints."
+                ["error"] = "Set NVIDIA_COSMOS_ENDPOINT to a running Cosmos Reason2 NIM (including localhost). NVIDIA_API_KEY is only used as bearer auth for remote endpoints."
             };
 
         var dataUri = $"data:{mimeType};base64,{Convert.ToBase64String(image)}";
@@ -204,7 +206,7 @@ public sealed class NvidiaVisualTools(ICadGateway gateway, IVisualReasoner reaso
                 ["provider"] = reasoner.Provider,
                 ["model"] = reasoner.Model,
                 ["may_execute_mutation"] = false,
-                ["error"] = "NVIDIA visual reasoning is disabled. Start the local Cosmos Reason2 NIM or configure a remote NVIDIA_COSMOS_ENDPOINT with NVIDIA_API_KEY if that endpoint requires bearer auth."
+                ["error"] = "NVIDIA visual reasoning is disabled. Set NVIDIA_COSMOS_ENDPOINT explicitly after starting the Cosmos Reason2 NIM; add NVIDIA_API_KEY only if a remote endpoint requires bearer auth."
             }.ToJsonString(CadJson.Options);
         }
 
