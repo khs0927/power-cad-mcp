@@ -146,3 +146,21 @@ Plans created while such a binding is active persist the source binding. Committ
 receipts echo `source_binding_handoff_digest`, `source_id`,
 `source_byte_revision_id`, and `parser_revision_id` so execution evidence can be joined
 back to Ontology without treating the Ontology handoff itself as mutation authorization.
+
+
+## Snapshot scan bounds and evidence scope
+
+`cad_extract_snapshot` has two independent bounds:
+
+- `max_entities` limits returned entity DTOs.
+- `max_scanned_entities` limits native model-space iterator advances (default 10,000; maximum 100,000).
+
+When the scan bound is reached, the capture is deliberately conservative: `scan_complete=false`,
+`total_count_known=false`, `total_count=null`, and count/hash scopes are marked as a scanned
+top-level prefix. Even when the drawing contains exactly the configured number of entities, the
+iterator is not advanced once more merely to prove end-of-sequence. Therefore partial review output
+must not be used to claim whole-drawing absence of defects. Frozen paging only pages the captured
+prefix; a larger explicit scan requires a new capture.
+
+This bounds entity traversal count, not wall-clock latency for a single complex entity, layer
+enumeration, document locking, layouts, block definitions, nested instances, or XREF contents.

@@ -37,14 +37,14 @@ public sealed class SnapshotStore
 public sealed class SnapshotTools(ICadGateway gateway, SnapshotStore store)
 {
     [McpServerTool(Name = "cad_extract_snapshot", ReadOnly = true)]
-    [Description("Capture bounded top-level model-space DTOs in one transaction. Counts include omitted rows; layouts, block definitions and XREF contents are explicitly excluded. Returns metadata and a frozen snapshot_id for paging/planning.")]
-    public async Task<string> Extract(int max_entities = 1000, CancellationToken ct = default)
+    [Description("Capture top-level model-space DTOs in one transaction. max_entities bounds returned rows; max_scanned_entities bounds inspected rows (default 10000, maximum 100000). Check scan_complete/counts_scope/content_hash_scope: a limited scan is a prefix, not a whole-drawing count or hash. Layouts, block definitions and XREF contents are excluded. Returns frozen snapshot_id for paging/planning.")]
+    public async Task<string> Extract(int max_entities = 1000, int max_scanned_entities = 10000, CancellationToken ct = default)
     {
         try
         {
             var identity = await gateway.SendAsync("document_identity", null, ct).ConfigureAwait(false);
             var id = identity?["document_id"]?.GetValue<string>() ?? throw new McpException("[PLUGIN_OUTDATED] Document identity is required.");
-            var data = (await gateway.SendAsync("extract_snapshot", new JsonObject { ["max_entities"] = max_entities, ["expected_document_id"] = id }, ct).ConfigureAwait(false))!.AsObject();
+            var data = (await gateway.SendAsync("extract_snapshot", new JsonObject { ["max_entities"] = max_entities, ["max_scanned_entities"] = max_scanned_entities, ["expected_document_id"] = id }, ct).ConfigureAwait(false))!.AsObject();
             var snapshotId = store.Put(data);
             data.Remove("entities");
             data["snapshot_id"] = snapshotId;
