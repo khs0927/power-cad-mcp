@@ -1,17 +1,21 @@
-"""Consumer-side acceptance gate for Ontology source-live binding reports.
+"""Consumer-side acceptance gate for Ontology executor handoffs.
 
 This module is read-only. Passing this gate still does not authorize a CAD
-mutation. The executor must revalidate inside its single-writer transaction.
+mutation. The executor must revalidate inside its single-writer transaction and
+emit an execution receipt.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import ntpath
 from typing import Any
 
-SCHEMA = "aec-source-live-binding/1"
+SCHEMA = "aec-executor-handoff/1"
 READY = "READY_FOR_EXECUTOR_REVALIDATION"
 BLOCKED = "BLOCKED"
+_HEX = set("0123456789abcdef")
 
 
 def _path(value: Any) -> str | None:
@@ -22,6 +26,13 @@ def _path(value: Any) -> str | None:
 
 def _text(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _sha256(value: Any) -> str | None:
+    text = _text(value)
+    if text is None or len(text) != 64 or any(ch not in _HEX for ch in text):
+        return None
+    return text
 
 
 def _handle(value: Any) -> str | None:
@@ -46,68 +57,95 @@ def _instance_path(value: Any) -> tuple[str, ...] | None:
     return tuple(out)
 
 
+def _digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _verify_handoff_digest(handoff: dict[str, Any]) -> bool:
+    declared = _sha256(handoff.get("handoff_digest"))
+    if declared is None:
+        return False
+    payload = dict(handoff)
+    payload.pop("handoff_digest", None)
+    return declared == _digest(payload)
+
+
 def evaluate_source_binding_acceptance(
-    binding: dict[str, Any],
+    handoff: dict[str, Any],
     fresh_document: dict[str, Any],
     fresh_target: dict[str, Any],
 ) -> dict[str, Any]:
-    """Recheck a SOURCE_BOUND report against fresh executor observations.
+    """Recheck an Ontology executor handoff against fresh CAD observations.
 
-    The result is only readiness for *another* executor-side transaction
-    revalidation. It is never an execution token.
+    READY means only that the bounded handoff still matches fresh read-only
+    observations. It is not an execution token.
     """
     reasons: list[str] = []
 
-    if binding.get("schema") != SCHEMA:
-        reasons.append("unsupported_binding_schema")
-    if binding.get("binding_state") != "SOURCE_BOUND":
-        reasons.append("binding_not_source_bound")
-    if binding.get("execution_authorized") is not False:
-        reasons.append("binding_must_not_pre_authorize_execution")
-    if binding.get("may_execute_mutation") is not False:
-        reasons.append("binding_must_be_read_only")
+    if handoff.get("schema") != SCHEMA:
+        reasons.append("unsupported_handoff_schema")
+    if handoff.get("binding_state") != "SOURCE_BOUND":
+        reasons.append("handoff_not_source_bound")
+    if handoff.get("review_status") != "VERIFIED_FOR_REVIEW":
+        reasons.append("handoff_not_review_ready")
+    if handoff.get("execution_authorized") is not False:
+        reasons.append("handoff_must_not_pre_authorize_execution")
+    if handoff.get("may_execute_mutation") is not False:
+        reasons.append("handoff_must_be_read_only")
+    if handoff.get("requires_executor_authorization") is not True:
+        reasons.append("handoff_must_require_executor_authorization")
+    if not _verify_handoff_digest(handoff):
+        reasons.append("handoff_digest_invalid")
 
-    for name in ("source_id", "source_byte_revision_id", "parser_revision_id"):
-        if _text(binding.get(name)) is None:
-            reasons.append(f"missing_binding_identity:{name}")
-
-    resolver = binding.get("resolver")
-    if not isinstance(resolver, dict):
-        reasons.append("missing_resolver_attestation")
-        resolver = {}
-    if resolver.get("receipt_signature_verified") is not True:
-        reasons.append("resolver_signature_not_verified")
-    if resolver.get("immutable_cache") is not True:
-        reasons.append("resolver_cache_not_immutable")
     for name in (
-        "resolver_id",
-        "resolver_issuer",
-        "trust_domain",
-        "signature_key_id",
+        "source_id",
+        "source_byte_revision_id",
+        "parser_revision_id",
+        "candidate_id",
+        "document_id",
+        "session_id",
+        "native_path",
+        "state_digest",
+        "modification_generation",
+        "units",
         "cache_entry_id",
-        "resolver_receipt_sha256",
-        "resolved_path",
     ):
-        if _text(resolver.get(name)) is None:
-            reasons.append(f"missing_resolver_field:{name}")
+        if _text(handoff.get(name)) is None:
+            reasons.append(f"missing_handoff_identity:{name}")
 
-    review = binding.get("review_guard")
-    if not isinstance(review, dict) or review.get("status") != "VERIFIED_FOR_REVIEW":
-        reasons.append("binding_not_review_ready")
+    source_sha = _sha256(handoff.get("source_sha256"))
+    file_sha = _sha256(handoff.get("file_sha256"))
+    receipt_sha = _sha256(handoff.get("resolver_receipt_sha256"))
+    if source_sha is None:
+        reasons.append("missing_or_invalid_handoff_source_sha256")
+    if file_sha is None:
+        reasons.append("missing_or_invalid_handoff_file_sha256")
+    if receipt_sha is None:
+        reasons.append("missing_or_invalid_resolver_receipt_sha256")
+    if source_sha is not None and file_sha is not None and source_sha != file_sha:
+        reasons.append("handoff_source_file_hash_mismatch")
 
-    bound_doc = binding.get("live_document")
-    if not isinstance(bound_doc, dict):
-        reasons.append("missing_bound_document")
-        bound_doc = {}
-    bound_target = binding.get("live_object")
-    if not isinstance(bound_target, dict):
-        reasons.append("missing_bound_target")
-        bound_target = {}
+    locator = handoff.get("object_locator")
+    if not isinstance(locator, dict):
+        reasons.append("missing_handoff_object_locator")
+        locator = {}
+    for name in ("handle", "fingerprint", "layout", "instance_path"):
+        if name not in locator:
+            reasons.append(f"missing_handoff_locator_field:{name}")
 
     required_doc = (
         "session_id",
         "document_id",
         "native_path",
+        "file_sha256",
         "state_digest",
         "modification_generation",
         "document_dirty",
@@ -121,45 +159,56 @@ def evaluate_source_binding_acceptance(
         reasons.append("dirty_or_unknown_current_document")
 
     for name in ("session_id", "document_id", "state_digest", "modification_generation", "units"):
-        if _text(fresh_document.get(name)) != _text(bound_doc.get(name)):
+        if _text(fresh_document.get(name)) != _text(handoff.get(name)):
             reasons.append(f"fresh_document_mismatch:{name}")
 
-    if _path(fresh_document.get("native_path")) != _path(bound_doc.get("native_path")):
+    if _path(fresh_document.get("native_path")) != _path(handoff.get("native_path")):
         reasons.append("fresh_document_mismatch:native_path")
-    if _path(bound_doc.get("native_path")) != _path(resolver.get("resolved_path")):
-        reasons.append("bound_document_resolver_path_mismatch")
+
+    fresh_file_sha = _sha256(fresh_document.get("file_sha256"))
+    if fresh_file_sha is None:
+        reasons.append("missing_or_invalid_fresh_file_sha256")
+    elif file_sha is not None and fresh_file_sha != file_sha:
+        reasons.append("fresh_document_mismatch:file_sha256")
 
     required_target = ("handle", "fingerprint", "layout", "instance_path")
     for name in required_target:
         if name not in fresh_target:
             reasons.append(f"missing_fresh_target_field:{name}")
 
-    if _handle(fresh_target.get("handle")) != _handle(bound_target.get("handle")):
+    if _handle(fresh_target.get("handle")) != _handle(locator.get("handle")):
         reasons.append("fresh_target_mismatch:handle")
-    if _text(fresh_target.get("fingerprint")) != _text(bound_target.get("fingerprint")):
+    if _text(fresh_target.get("fingerprint")) != _text(locator.get("fingerprint")):
         reasons.append("fresh_target_mismatch:fingerprint")
-    if _layout(fresh_target.get("layout")) != _layout(bound_target.get("layout")):
+    if _layout(fresh_target.get("layout")) != _layout(locator.get("layout")):
         reasons.append("fresh_target_mismatch:layout")
-    if _instance_path(fresh_target.get("instance_path")) != _instance_path(bound_target.get("instance_path")):
+    if _instance_path(fresh_target.get("instance_path")) != _instance_path(locator.get("instance_path")):
         reasons.append("fresh_target_mismatch:instance_path")
 
     reasons = sorted(set(reasons))
     return {
-        "schema": "power-cad-source-binding-acceptance/1",
+        "schema": "power-cad-source-binding-acceptance/2",
         "status": READY if not reasons else BLOCKED,
         "reasons": reasons,
-        "source_id": binding.get("source_id"),
-        "source_byte_revision_id": binding.get("source_byte_revision_id"),
-        "parser_revision_id": binding.get("parser_revision_id"),
+        "handoff_digest": handoff.get("handoff_digest"),
+        "source_id": handoff.get("source_id"),
+        "source_byte_revision_id": handoff.get("source_byte_revision_id"),
+        "parser_revision_id": handoff.get("parser_revision_id"),
+        "candidate_id": handoff.get("candidate_id"),
         "document_id": fresh_document.get("document_id"),
+        "file_sha256": fresh_document.get("file_sha256"),
         "handle": fresh_target.get("handle"),
         "fingerprint": fresh_target.get("fingerprint"),
         "may_execute_mutation": False,
         "execution_authorized": False,
         "requires_transaction_revalidation": True,
+        "requires_single_writer": True,
+        "requires_execution_receipt": True,
         "note": (
-            "READY means only that the previously SOURCE_BOUND identity still matches "
-            "fresh read-only observations. Power CAD must re-check the bound document, "
-            "generation and target fingerprint inside the single-writer transaction."
+            "READY means only that the Ontology executor handoff still matches "
+            "fresh read-only document bytes/state and target identity. Power CAD "
+            "must re-check document state, file identity and target fingerprint "
+            "inside the single-writer transaction before mutation and then emit "
+            "COMMITTED/ROLLED_BACK/REJECTED/INDETERMINATE."
         ),
     }
