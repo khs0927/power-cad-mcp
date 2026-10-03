@@ -350,7 +350,9 @@ public sealed class ServerTests : IDisposable
             tools.Select(t => t.Name).Order().ToArray());
         Assert.True(tools.Single(t => t.Name == "cad_query").ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.True(tools.Single(t => t.Name == "cad_hs_steel_catalog_prepare").ProtocolTool.Annotations?.ReadOnlyHint);
-        Assert.True(tools.Single(t => t.Name == "cad_hs_steel_prepare").ProtocolTool.Annotations?.ReadOnlyHint);\n        Assert.True(tools.Single(t => t.Name == "cad_visual_inspect").ProtocolTool.Annotations?.ReadOnlyHint);\n        Assert.True(tools.Single(t => t.Name == "cad_visual_verify").ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.True(tools.Single(t => t.Name == "cad_hs_steel_prepare").ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.True(tools.Single(t => t.Name == "cad_visual_inspect").ProtocolTool.Annotations?.ReadOnlyHint);
+        Assert.True(tools.Single(t => t.Name == "cad_visual_verify").ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.True(tools.Single(t => t.Name == "ontology_auto_context").ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.True(tools.Single(t => t.Name == "ontology_block_candidates").ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.True(tools.Single(t => t.Name == "ontology_locate").ProtocolTool.Annotations?.ReadOnlyHint);
