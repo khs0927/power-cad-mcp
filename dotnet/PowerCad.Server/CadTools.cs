@@ -63,9 +63,16 @@ public sealed partial class CadTools(ICadGateway gateway)
     public Task<string> DocumentIdentity(CancellationToken ct = default) => Call("document_identity", [], ct);
 
     [McpServerTool(Name = "cad_bind_document", ReadOnly = true, Idempotent = true)]
-    [Description("Bind this client to the document_id just read. Required before edits, saves and exports. A document switch then fails instead of reusing handles in another drawing.")]
-    public Task<string> BindDocument(string document_id, CancellationToken ct = default) =>
-        Call("bind_document", new JsonObject { ["document_id"] = document_id }, ct);
+    [Description("Bind this client to the document_id just read. Optionally attach an Ontology aec-executor-handoff/1 SOURCE_BOUND provenance object. The source handoff is not execution authorization; edits still require live revalidation/approval.")]
+    public Task<string> BindDocument(
+        string document_id,
+        [Description("Optional Ontology aec-executor-handoff/1 object for this exact live document")] JsonElement? source_binding = null,
+        CancellationToken ct = default) =>
+        Call("bind_document", new JsonObject
+        {
+            ["document_id"] = document_id,
+            ["source_binding"] = source_binding.HasValue ? JsonNode.Parse(source_binding.Value.GetRawText()) : null,
+        }, ct);
 
     [McpServerTool(Name = "cad_list_targets", ReadOnly = true, Idempotent = true)]
     [Description("List running AutoCAD sessions that have the Power CAD plugin loaded.")]
