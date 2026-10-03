@@ -14,6 +14,29 @@ public sealed class NvidiaVisualReasoningTests
             Task.FromResult(responder(request));
     }
 
+
+    [Fact]
+    public void Hosted_endpoint_defaults_to_public_Reason2_8B_and_local_NIM_to_2B()
+    {
+        static string? Hosted(string name) => name switch
+        {
+            "NVIDIA_COSMOS_ENDPOINT" => "https://integrate.api.nvidia.com/v1/chat/completions",
+            "NVIDIA_API_KEY" => "nvapi-test",
+            _ => null,
+        };
+        static string? Local(string name) => name switch
+        {
+            "NVIDIA_COSMOS_ENDPOINT" => "http://127.0.0.1:8000/v1/chat/completions",
+            _ => null,
+        };
+
+        var hosted = NvidiaCosmosReasoner.FromEnvironment(Hosted);
+        var local = NvidiaCosmosReasoner.FromEnvironment(Local);
+
+        Assert.Equal("nvidia/cosmos-reason2-8b", hosted.Model);
+        Assert.Equal("nvidia/cosmos-reason2-2b", local.Model);
+    }
+
     [Fact]
     public async Task Cosmos_client_sends_image_and_discards_think_trace()
     {
