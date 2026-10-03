@@ -10,8 +10,11 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
     private readonly SemaphoreSlim _gate = new(1, 1);
     private string? _documentId;
     private JsonObject? _sourceBinding;
+    private JsonObject? _boundIdentity;
     public string Mode => inner.Mode;
 
+    public string? BoundDocumentId => _documentId;
+    public JsonObject? BoundDocument => _boundIdentity?.DeepClone().AsObject();
     public JsonObject? SourceBindingSnapshot() => _sourceBinding?.DeepClone().AsObject();
 
     private static void ValidateSourceBinding(JsonObject binding, string documentId)
@@ -78,6 +81,7 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
                 if (identity?["document_id"]?.GetValue<string>() != id)
                     throw new CadException(ErrorCodes.PluginOutdated, "The plugin does not support document binding.");
                 _documentId = id;
+                _boundIdentity = identity?.DeepClone().AsObject();
                 _sourceBinding = sourceBinding;
                 if (_sourceBinding is not null && identity is JsonObject identityObject)
                     identityObject["source_binding"] = _sourceBinding.DeepClone();
@@ -125,6 +129,7 @@ public sealed class DocumentBoundGateway(ICadGateway inner) : ICadGateway, IAsyn
         {
             var result = inner.SelectTarget(target);
             _documentId = null;
+            _boundIdentity = null;
             _sourceBinding = null;
             return result;
         }
