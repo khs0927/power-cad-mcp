@@ -1,4 +1,4 @@
-from power_cad_mcp import source_binding_acceptance as sba
+from power_cad_mcp import source_binding_acceptance as sba  # noqa: I001
 
 
 SHA = "a" * 64
