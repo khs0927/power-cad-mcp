@@ -1,24 +1,8 @@
-import copy
-import hashlib
-import json
-
-from power_cad_mcp.source_binding_acceptance import BLOCKED, READY, evaluate_source_binding_acceptance
+from power_cad_mcp import source_binding_acceptance as sba
 
 
 SHA = "a" * 64
 RECEIPT = "b" * 64
-
-
-def digest(value):
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
 
 
 def handoff():
@@ -50,7 +34,7 @@ def handoff():
         "may_execute_mutation": False,
         "requires_executor_authorization": True,
     }
-    payload["handoff_digest"] = digest(payload)
+    payload["handoff_digest"] = sba._digest(payload)
     return payload
 
 
@@ -77,12 +61,12 @@ def target():
 
 
 def evaluate(h=None, d=None, t=None):
-    return evaluate_source_binding_acceptance(h or handoff(), d or document(), t or target())
+    return sba.evaluate_source_binding_acceptance(h or handoff(), d or document(), t or target())
 
 
 def test_valid_handoff_is_only_ready_for_transaction_revalidation():
     result = evaluate()
-    assert result["status"] == READY
+    assert result["status"] == sba.READY
     assert result["reasons"] == []
     assert result["execution_authorized"] is False
     assert result["may_execute_mutation"] is False
@@ -94,19 +78,19 @@ def test_valid_handoff_is_only_ready_for_transaction_revalidation():
 def test_handoff_must_be_source_bound_review_ready_and_non_authorizing():
     h = handoff()
     h["binding_state"] = "CANDIDATE"
-    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     assert "handoff_not_source_bound" in evaluate(h=h)["reasons"]
 
     h = handoff()
     h["review_status"] = "REQUIRES_REVIEW"
-    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     assert "handoff_not_review_ready" in evaluate(h=h)["reasons"]
 
     h = handoff()
     h["execution_authorized"] = True
     h["may_execute_mutation"] = True
     h["requires_executor_authorization"] = False
-    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     result = evaluate(h=h)
     assert "handoff_must_not_pre_authorize_execution" in result["reasons"]
     assert "handoff_must_be_read_only" in result["reasons"]
@@ -117,21 +101,21 @@ def test_handoff_digest_tampering_is_rejected():
     h = handoff()
     h["state_digest"] = "tampered"
     result = evaluate(h=h)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "handoff_digest_invalid" in result["reasons"]
 
 
 def test_source_and_file_hashes_must_be_valid_and_equal():
     h = handoff()
     h["source_sha256"] = "c" * 64
-    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     result = evaluate(h=h)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "handoff_source_file_hash_mismatch" in result["reasons"]
 
     h = handoff()
     h["file_sha256"] = "bad"
-    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     result = evaluate(h=h)
     assert "missing_or_invalid_handoff_file_sha256" in result["reasons"]
 
@@ -140,7 +124,7 @@ def test_fresh_file_bytes_must_match_handoff():
     d = document()
     d["file_sha256"] = "c" * 64
     result = evaluate(d=d)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "fresh_document_mismatch:file_sha256" in result["reasons"]
 
 
@@ -150,7 +134,7 @@ def test_document_switch_generation_and_state_change_are_rejected():
     d["state_digest"] = "state-124"
     d["modification_generation"] = "generation-43"
     result = evaluate(d=d)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "fresh_document_mismatch:document_id" in result["reasons"]
     assert "fresh_document_mismatch:state_digest" in result["reasons"]
     assert "fresh_document_mismatch:modification_generation" in result["reasons"]
@@ -160,7 +144,7 @@ def test_same_basename_in_different_folder_is_rejected():
     d = document()
     d["native_path"] = r"D:\other\A-201.dwg"
     result = evaluate(d=d)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "fresh_document_mismatch:native_path" in result["reasons"]
 
 
@@ -187,7 +171,7 @@ def test_fingerprint_handle_layout_and_nested_instance_are_all_rechecked():
         }
     )
     result = evaluate(t=t)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "fresh_target_mismatch:handle" in result["reasons"]
     assert "fresh_target_mismatch:fingerprint" in result["reasons"]
     assert "fresh_target_mismatch:layout" in result["reasons"]
@@ -202,7 +186,7 @@ def test_missing_fresh_fields_fail_closed():
     t = target()
     del t["instance_path"]
     result = evaluate(d=d, t=t)
-    assert result["status"] == BLOCKED
+    assert result["status"] == sba.BLOCKED
     assert "missing_fresh_document_field:file_sha256" in result["reasons"]
     assert "missing_fresh_document_field:state_digest" in result["reasons"]
     assert "missing_fresh_document_field:modification_generation" in result["reasons"]
@@ -211,6 +195,7 @@ def test_missing_fresh_fields_fail_closed():
 
 def test_input_objects_are_not_mutated():
     h, d, t = handoff(), document(), target()
-    before = copy.deepcopy((h, d, t))
-    evaluate_source_binding_acceptance(h, d, t)
-    assert (h, d, t) == before
+    sba.evaluate_source_binding_acceptance(h, d, t)
+    assert h == handoff()
+    assert d == document()
+    assert t == target()
