@@ -75,6 +75,45 @@ public sealed class ExecutionReceiptContractTests
             receipt["reasons"]!.AsArray().Select(x => x!.GetValue<string>()));
     }
 
+    [Theory]
+    [InlineData("executor", "other-executor", "committed_result_executor_mismatch")]
+    [InlineData("plan_id", "other-plan", "committed_result_plan_id_mismatch")]
+    [InlineData("document_id", "other-doc", "committed_result_document_id_mismatch")]
+    public void CommittedResultMustBelongToTheSameExecutorPlanAndDocument(
+        string field,
+        string value,
+        string reason)
+    {
+        var plan = Plan("Committed");
+        var result = CommittedResult();
+        result[field] = value;
+        plan["result"] = result;
+
+        var receipt = ExecutionReceiptContract.Project(plan);
+
+        Assert.Equal("INDETERMINATE", receipt["receipt_status"]!.GetValue<string>());
+        Assert.False(receipt["committed"]!.GetValue<bool>());
+        Assert.True(receipt["requires_manual_reconciliation"]!.GetValue<bool>());
+        Assert.Contains(reason, receipt["reasons"]!.AsArray().Select(x => x!.GetValue<string>()));
+    }
+
+    [Fact]
+    public void ContradictoryFailureEvidenceIsIndeterminate()
+    {
+        var plan = Plan("Failed");
+        plan["rollback_verified"] = true;
+        plan["mutation_started"] = false;
+
+        var receipt = ExecutionReceiptContract.Project(plan);
+
+        Assert.Equal("INDETERMINATE", receipt["receipt_status"]!.GetValue<string>());
+        Assert.False(receipt["safe_to_create_replacement_plan"]!.GetValue<bool>());
+        Assert.True(receipt["requires_manual_reconciliation"]!.GetValue<bool>());
+        Assert.Contains(
+            "conflicting_failure_evidence",
+            receipt["reasons"]!.AsArray().Select(x => x!.GetValue<string>()));
+    }
+
     [Fact]
     public void FailedPlanIsRolledBackOnlyWithExplicitRollbackProof()
     {
