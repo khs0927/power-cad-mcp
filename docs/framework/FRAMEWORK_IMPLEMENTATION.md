@@ -164,3 +164,20 @@ prefix; a larger explicit scan requires a new capture.
 
 This bounds entity traversal count, not wall-clock latency for a single complex entity, layer
 enumeration, document locking, layouts, block definitions, nested instances, or XREF contents.
+
+
+## HS-STEEL draw-plan handoff
+
+`cad_hs_steel_prepare` is a read-only import gate for
+`hs-steel-draw-plan/1`. It verifies the producer, canonical contract digest,
+millimetre units, non-authorizing safety flags, and every entity through
+Power CAD's own `CreateSpec.Parse` validation.
+
+The tool separates HS-STEEL tags from strict create specs, chunks create specs
+at 200 entities per step, and returns steps for the normal
+`cad_plan_create -> cad_plan_execute(dry_run=true) -> explicit commit` flow.
+It does not bind a document, create a plan, or mutate CAD by itself.
+
+HS tags are returned as a tag manifest. `xdata_write_supported=false` is
+explicit until native HS-STEEL XData persistence is implemented; tags must not
+be silently dropped.
