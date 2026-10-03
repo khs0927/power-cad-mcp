@@ -920,4 +920,48 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         and blocks in one bundle."""
         return cad.auto_context(task, drawing, limit)
 
+    @tool(ONTOLOGY)
+    def ontology_census_check(
+        path: Annotated[
+            str, Field(description="Drawing file (.dxf; .dwg needs ODA File Converter) to look up")
+        ],
+        census_json: Annotated[
+            str | None,
+            Field(description="census.json from drawing_census; omit to take the census of `path` now"),
+        ] = None,
+        project_id: ProjectArg = None,
+        standard: Annotated[
+            str | None,
+            Field(description="ZIUM floor_plan_standard.json for the class/layer mapping (census of path)"),
+        ] = None,
+        limit: Annotated[int, Field(ge=1, le=500, description="Max listed handles per section")] = 50,
+    ) -> dict[str, Any]:
+        """Compare a drawing's local census with what the Ontology holds for the same file, read-only.
+
+        Reports whether the file is ingested (matched by file name, .dwg = .dxf), handles in the Ontology
+        but missing from the file (changed since ingestion) and layout entities the Ontology made no
+        element of, per-layer entity counts (Ontology Layer rows vs census) and, per class, Ontology
+        element counts beside census entities on the same layers and on the ZIUM standard layers
+        (DOOR, WIN, WAL1-3 ...). Anything that does not line up is listed under `not_comparable`.
+        Writes no file and never changes the drawing."""
+        import json
+        from pathlib import Path
+
+        from .census import census, load
+        from .census_check import census_check
+
+        src = cad.path(path)
+        if census_json:
+            report = json.loads(Path(cad.path(census_json)).read_text(encoding="utf-8"))
+            if not isinstance(report, dict) or "completeness" not in report:
+                raise ValueError(f"{census_json} is not a census.json from drawing_census")
+            source = "census_json"
+        else:
+            std = json.loads(Path(cad.path(standard)).read_text(encoding="utf-8")) if standard else None
+            report = census(load(Path(src)), std)
+            source = "file"
+        return census_check(
+            cad.ontology, src, report, project_id=project_id, census_source=source, limit=limit
+        )
+
     return mcp

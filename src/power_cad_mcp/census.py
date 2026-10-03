@@ -130,12 +130,14 @@ def census(doc: Drawing, standard: dict[str, Any] | None = None) -> dict[str, An
     blind: list[dict[str, Any]] = []
     insert_counts: Counter = Counter()
     seen_handles: set[str] = set()
+    entity_index: list[list[str]] = []  # [handle, type, layer, bucket] for reconciliation
 
     def visit(e: DXFEntity, bucket: str) -> None:
         t = e.dxftype()
         buckets[bucket][t] += 1
         seen_handles.add(e.dxf.handle)
         layer = e.dxf.get("layer", "0")
+        entity_index.append([e.dxf.handle, t, layer, bucket])
         layer_use[layer] += 1
         layer_types[layer][t] += 1
         if t == "INSERT":
@@ -237,6 +239,7 @@ def census(doc: Drawing, standard: dict[str, Any] | None = None) -> dict[str, An
         "file": doc.filename,
         "dxf_version": doc.dxfversion,
         "units": doc.units,
+        "standard_applied": standard is not None,
         "completeness": {
             "entities_in_db": len(all_graphic),
             "entities_visited": visited,
@@ -264,6 +267,7 @@ def census(doc: Drawing, standard: dict[str, Any] | None = None) -> dict[str, An
         ],
         "blind_spots": blind,
         "texts": texts,
+        "entity_index": entity_index,
     }
 
 
