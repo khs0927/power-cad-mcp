@@ -24,10 +24,13 @@ def handoff():
         "units": "mm",
         "resolver_receipt_sha256": RECEIPT,
         "resolved_sha256": SHA,
-        "cache_entry_id": "cache-A201",
+        "resolver_id": "drive-cache-resolver/1",
         "resolver_issuer": "sion-source-resolver",
         "trust_domain": "khs0927/aec-source-cache",
         "signature_key_id": "resolver-key-2026-10",
+        "receipt_signature_verified": True,
+        "immutable_cache": True,
+        "cache_entry_id": "cache-A201",
         "object_locator": {
             "layout": "Model",
             "handle": "2F3",
@@ -64,8 +67,27 @@ def target():
     }
 
 
-def evaluate(h=None, d=None, t=None):
-    return sba.evaluate_source_binding_acceptance(h or handoff(), d or document(), t or target())
+def trust_policy():
+    return {
+        "schema": "power-cad-resolver-trust-policy/1",
+        "trusted_resolvers": [
+            {
+                "resolver_id": "drive-cache-resolver/1",
+                "resolver_issuer": "sion-source-resolver",
+                "trust_domain": "khs0927/aec-source-cache",
+                "signature_key_ids": ["resolver-key-2026-10"],
+            }
+        ],
+    }
+
+
+def evaluate(h=None, d=None, t=None, p=None):
+    return sba.evaluate_source_binding_acceptance(
+        h or handoff(),
+        d or document(),
+        t or target(),
+        trust_policy() if p is None else p,
+    )
 
 
 def test_valid_handoff_is_only_ready_for_transaction_revalidation():
@@ -77,6 +99,44 @@ def test_valid_handoff_is_only_ready_for_transaction_revalidation():
     assert result["requires_transaction_revalidation"] is True
     assert result["requires_single_writer"] is True
     assert result["requires_execution_receipt"] is True
+    assert result["resolver_trust_matched"] is True
+    assert result["resolved_sha256"] == SHA
+
+
+def test_missing_or_rejected_resolver_trust_policy_blocks_ready():
+    result = sba.evaluate_source_binding_acceptance(handoff(), document(), target(), None)
+    assert result["status"] == sba.BLOCKED
+    assert "missing_resolver_trust_policy" in result["reasons"]
+
+    wrong = trust_policy()
+    wrong["trusted_resolvers"][0]["signature_key_ids"] = ["other-key"]
+    result = evaluate(p=wrong)
+    assert result["status"] == sba.BLOCKED
+    assert "resolver_trust_policy_rejected" in result["reasons"]
+    assert result["resolver_trust_matched"] is False
+
+
+def test_resolver_attestation_must_be_verified_and_immutable():
+    h = handoff()
+    h["receipt_signature_verified"] = False
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert "resolver_receipt_signature_not_verified" in result["reasons"]
+
+    h = handoff()
+    h["immutable_cache"] = False
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert "resolver_cache_not_immutable" in result["reasons"]
+
+
+def test_source_resolved_and_live_hashes_must_all_match():
+    h = handoff()
+    h["resolved_sha256"] = "c" * 64
+    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert result["status"] == sba.BLOCKED
+    assert "handoff_source_resolved_file_hash_mismatch" in result["reasons"]
 
 
 def test_handoff_must_be_source_bound_review_ready_and_non_authorizing():
@@ -122,23 +182,6 @@ def test_source_and_file_hashes_must_be_valid_and_equal():
     h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
     result = evaluate(h=h)
     assert "missing_or_invalid_handoff_file_sha256" in result["reasons"]
-
-
-def test_resolved_hash_and_resolver_trust_metadata_are_required():
-    h = handoff()
-    h["resolved_sha256"] = "c" * 64
-    h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
-    result = evaluate(h=h)
-    assert result["status"] == sba.BLOCKED
-    assert "handoff_source_resolved_file_hash_mismatch" in result["reasons"]
-
-    for field in ("resolver_issuer", "trust_domain", "signature_key_id"):
-        h = handoff()
-        del h[field]
-        h["handoff_digest"] = sba._digest({k: v for k, v in h.items() if k != "handoff_digest"})
-        result = evaluate(h=h)
-        assert result["status"] == sba.BLOCKED
-        assert f"missing_handoff_identity:{field}" in result["reasons"]
 
 
 def test_fresh_file_bytes_must_match_handoff():
