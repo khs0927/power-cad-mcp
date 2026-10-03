@@ -1046,6 +1046,50 @@ public sealed class OntologyRestTests
         public JsonObject SelectTarget(string target) => Current.SelectTarget(target);
     }
 
+
+    [Fact]
+    public async Task Block_candidates_require_live_native_definition_and_never_authorize_insertion()
+    {
+        var (doc, _, _, _) = House();
+        var commits = doc.CommitCount;
+        var gateway = new DocumentBoundGateway(new SimulatorGateway(doc, readOnly: false));
+        var tools = new OntologyRestTools(Client(), gateway);
+
+        var door = Obj(await tools.BlockCandidates("DOOR*"));
+        Assert.True(door["read_only"]!.GetValue<bool>());
+        Assert.True(door["candidate_only"]!.GetValue<bool>());
+        Assert.False(door["source_revision_verified"]!.GetValue<bool>());
+        Assert.False(door["may_execute_mutation"]!.GetValue<bool>());
+        Assert.True(door["requires_live_insert_revalidation"]!.GetValue<bool>());
+        Assert.True(door["inventory_complete"]!.GetValue<bool>());
+        Assert.Contains(
+            door["insertable"]!.AsArray().OfType<JsonObject>(),
+            row => row["insert_name"]!.GetValue<string>() == "DOOR_SINGLE");
+        Assert.Equal(commits, doc.CommitCount);
+
+        var remoteOnly = Obj(await tools.BlockCandidates("AW*"));
+        Assert.Empty(remoteOnly["insertable"]!.AsArray());
+        Assert.Contains(
+            remoteOnly["other_files"]!.AsArray().OfType<JsonObject>(),
+            row => row["ontology_name"]!.GetValue<string>() == "AW_WINDOW");
+        Assert.Equal(commits, doc.CommitCount);
+    }
+
+    [Fact]
+    public async Task Block_candidates_without_cad_inventory_stay_unverified()
+    {
+        var tools = new OntologyRestTools(Client());
+        var result = Obj(await tools.BlockCandidates("AW*"));
+
+        Assert.False(result["inventory_complete"]!.GetValue<bool>());
+        Assert.Empty(result["insertable"]!.AsArray());
+        Assert.Contains(
+            result["unverified"]!.AsArray().OfType<JsonObject>(),
+            row => row["ontology_name"]!.GetValue<string>() == "AW_WINDOW");
+        Assert.False(result["may_execute_mutation"]!.GetValue<bool>());
+    }
+
+
     [Theory]
     [InlineData(".")]
     [InlineData("..")]
