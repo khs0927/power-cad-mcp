@@ -843,6 +843,9 @@ async def test_ontology_locate_tool(fake_url, tmp_path, monkeypatch):
         assert by_id["el-w1"]["status"] == "other_drawing" and by_id["el-w1"]["source_file"] == "A-501.dwg"
         assert by_id["nope"]["status"] == "not_found" and "Object not found" in by_id["nope"]["error"]
         assert out["open_drawing"]["name"] == "A-201.dxf" and out["read_only"] is True
+        assert out["match_scope"] == "drawing_identity_and_live_entity_plausibility"
+        assert out["source_revision_verified"] is False
+        assert out["may_execute_mutation"] is False
         assert sorted(out["matched_handles"]) == sorted([handles["door"], handles["wall"]])
         assert out["counts"] == {
             "matched": 2,
@@ -871,6 +874,8 @@ async def test_ontology_locate_tool(fake_url, tmp_path, monkeypatch):
         targets = out["ontology_targets"]
         assert [t["element_id"] for t in targets["targets"]] == ["el-x-door"]
         assert targets["targets"][0]["handle"] == handles["door"]
+        assert targets["source_revision_verified"] is False
+        assert targets["may_execute_mutation"] is False
         assert targets["counts"] == {
             "handle_missing": 1,
             "matched": 1,

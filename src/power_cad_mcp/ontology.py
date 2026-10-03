@@ -979,15 +979,15 @@ def match_element(
     *,
     element_id: str | None = None,
 ) -> dict[str, Any]:
-    """Decide whether an Ontology element can be acted on in the open drawing. Never edits anything.
+    """Find a plausible live candidate for an Ontology element. Never authorizes an edit.
 
     ``lookup(handle)`` returns the live entity dict or None when the handle does not exist.
     Status: ``matched`` (same saved drawing, handle exists, entity plausible with at least one positive
     signal), ``unverified`` (handle exists and nothing contradicts, but nothing ties the entity to the
     element either), ``mismatch`` (handle exists but the entity does not look like the element),
     ``handle_missing`` (same drawing, no such entity / no handle recorded), ``other_drawing`` (another
-    file, or the open drawing is unknown / unsaved / default-named) or ``not_found``. Only ``matched``
-    is actionable.
+    file, or the open drawing is unknown / unsaved / default-named) or ``not_found``. A ``matched``
+    result is a review candidate only; source revision and edit-time identity are still unverified.
     """
     label = _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None
     if not element:
@@ -1068,6 +1068,9 @@ def _locate_report(results: list[dict[str, Any]], open_drawing: dict[str, Any] |
         "matched_handles": [r["handle"] for r in results if r["status"] == "matched"],
         "results": results,
         "read_only": True,
+        "match_scope": "drawing_identity_and_live_entity_plausibility",
+        "source_revision_verified": False,
+        "may_execute_mutation": False,
     }
 
 
@@ -1081,7 +1084,7 @@ def targets_summary(
     """Locate the elements an auto_context bundle already carries (no extra Ontology calls).
 
     Only elements of the open drawing are looked up; the rest are just counted as ``other_drawing``.
-    Returns the matched handles (with class/name/entity type) the agent can pass to the edit tools.
+    Returns matched candidate handles (with class/name/entity type) for review only.
     """
     by_class = (bundle.get("elements") or {}).values()
     elements = [*(bundle.get("search") or []), *(e for items in by_class for e in items)]
@@ -1116,6 +1119,9 @@ def targets_summary(
         "open_drawing": _drawing_label(open_drawing) if isinstance(open_drawing, dict) else None,
         "counts": counts,
         "targets": targets,
+        "match_scope": "drawing_identity_and_live_entity_plausibility",
+        "source_revision_verified": False,
+        "may_execute_mutation": False,
     }
     if other:
         out["not_actionable"] = other

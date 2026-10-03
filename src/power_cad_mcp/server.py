@@ -1003,8 +1003,9 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
         the entity is plausible for the element (type, layer, block). Status per id: matched,
         unverified, mismatch, handle_missing, other_drawing or not_found. An unsaved or default-named
         (Drawing1) open drawing never matches; full paths are compared when both sides have a folder.
-        Only `matched` handles are safe to pass to
-        get_entity / move_entities / delete_entities / set_entity_properties. Never modifies the drawing."""
+        A `matched` handle is only a review candidate. Use get_entity for inspection; source revision,
+        the current document state and target fingerprint must pass the SOURCE_BOUND executor handoff
+        and transaction-time revalidation before mutation. Never modifies the drawing."""
         return cad.locate(element_ids)
 
     @tool(ONTOLOGY)
