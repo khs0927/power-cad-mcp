@@ -22,6 +22,12 @@ def main() -> int:
     parser.add_argument("--handoff", type=Path, required=True)
     parser.add_argument("--document", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
+    parser.add_argument(
+        "--trust-policy",
+        type=Path,
+        required=True,
+        help="Executor-owned resolver trust policy JSON.",
+    )
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
@@ -29,6 +35,7 @@ def main() -> int:
         load(args.handoff),
         load(args.document),
         load(args.target),
+        load(args.trust_policy),
     )
     rendered = json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     if args.out:
