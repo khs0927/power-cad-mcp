@@ -858,6 +858,9 @@ public sealed class OntologyRestTests
         Assert.Contains("Object not found", byId["nope"]["error"]!.GetValue<string>());
         Assert.Equal("""{"name":"A-201.dxf","path":"C:\\Proj\\A-201.dxf"}""", output["open_drawing"]!.ToJsonString());
         Assert.True(output["read_only"]!.GetValue<bool>());
+        Assert.False(output["source_revision_verified"]!.GetValue<bool>());
+        Assert.False(output["may_execute_mutation"]!.GetValue<bool>());
+        Assert.Equal("drawing_identity_and_live_entity_plausibility", output["match_scope"]!.GetValue<string>());
         Assert.Equal(new[] { door, wall }.Order(), output["matched_handles"]!.AsArray().Select(h => h!.GetValue<string>()).Order());
         Assert.Equal("""{"matched":2,"mismatch":1,"handle_missing":1,"other_drawing":1,"not_found":1}""", output["counts"]!.ToJsonString());
         var contexts = _fake.Requests.Where(r => r.Path.EndsWith("/context", StringComparison.Ordinal)).ToList();
@@ -873,6 +876,9 @@ public sealed class OntologyRestTests
 
         var targets = await OntologyRest.TargetsSummaryAsync(bundle, OntologyCad.Describe(doc.Describe())!.Drawing, OntologyCad.Lookup(new SimulatorGateway(doc, true), null, default));
         Assert.Equal(["el-x-door"], targets["targets"]!.AsArray().Select(t => t!["element_id"]!.GetValue<string>()));
+        Assert.False(targets["source_revision_verified"]!.GetValue<bool>());
+        Assert.False(targets["may_execute_mutation"]!.GetValue<bool>());
+        Assert.Equal("drawing_identity_and_live_entity_plausibility", targets["match_scope"]!.GetValue<string>());
         Assert.Equal("""{"handle_missing":1,"matched":1,"mismatch":1}""", targets["counts"]!.ToJsonString()); // el-d1's 2F3 is absent
 
         Assert.Equal(commits, doc.CommitCount); // locate/auto_context never touched the drawing
