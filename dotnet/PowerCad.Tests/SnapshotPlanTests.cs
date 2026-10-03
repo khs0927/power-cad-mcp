@@ -156,6 +156,39 @@ public sealed class SnapshotPlanTests : IDisposable
         Assert.Equal(ErrorCodes.DocumentChanged, error.Code);
     }
 
+    [Theory]
+    [InlineData("resolver_receipt_sha256", "\"invalid\"")]
+    [InlineData("resolver_receipt_sha256", "\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeg\"")]
+    [InlineData("handoff_digest", "123")]
+    [InlineData("source_id", "\"   \"")]
+    [InlineData("parser_revision_id", "{}")]
+    [InlineData("source_byte_revision_id", "null")]
+    [InlineData("execution_authorized", "\"false\"")]
+    [InlineData("may_execute_mutation", "true")]
+    [InlineData("requires_executor_authorization", "false")]
+    public async Task Malformed_source_binding_is_rejected_without_replacing_existing_binding(string field, string json)
+    {
+        var doc = InMemoryCadDocument.CreateSample();
+        await using var gateway = new DocumentBoundGateway(new SimulatorGateway(doc, false));
+        var valid = SourceBinding(doc.DocumentId);
+        await gateway.SendAsync("bind_document", new JsonObject
+        {
+            ["document_id"] = doc.DocumentId,
+            ["source_binding"] = valid.DeepClone(),
+        }, default);
+        var invalid = valid.DeepClone().AsObject();
+        invalid[field] = JsonNode.Parse(json);
+        var count = doc.CommitCount;
+        var error = await Assert.ThrowsAsync<CadException>(() => gateway.SendAsync("bind_document", new JsonObject
+        {
+            ["document_id"] = doc.DocumentId,
+            ["source_binding"] = invalid,
+        }, default));
+        Assert.Equal(ErrorCodes.InvalidParams, error.Code);
+        Assert.True(JsonNode.DeepEquals(valid, gateway.SourceBindingSnapshot()));
+        Assert.Equal(count, doc.CommitCount);
+    }
+
     [Fact]
     public async Task Stale_plan_target_rejects_batch_and_records_failure()
     {
