@@ -964,5 +964,4 @@ def create_server(backend: CadBackend | None = None, settings: Settings | None =
             cad.ontology, src, report, project_id=project_id, census_source=source, limit=limit
         )
 
-
     return mcp
