@@ -157,6 +157,9 @@ public sealed class PlanTools(ICadGateway gateway, SnapshotStore snapshots, Plan
                     throw new CadException(ErrorCodes.Internal, "The execution result did not contain a verifiable commit receipt.");
                 if (plan["source_binding"] is JsonObject sourceBinding)
                 {
+                    receipt["executor"] = "power-cad";
+                    receipt["plan_id"] = plan["plan_id"]!.DeepClone();
+                    receipt["document_id"] = plan["document_id"]!.DeepClone();
                     receipt["source_binding_handoff_digest"] = sourceBinding["handoff_digest"]?.DeepClone();
                     receipt["source_id"] = sourceBinding["source_id"]?.DeepClone();
                     receipt["source_byte_revision_id"] = sourceBinding["source_byte_revision_id"]?.DeepClone();
