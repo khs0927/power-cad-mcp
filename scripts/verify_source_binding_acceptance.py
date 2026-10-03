@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check an Ontology SOURCE_BOUND report against fresh Power CAD observations."""
+"""Check an Ontology executor handoff against fresh Power CAD observations."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ def load(path: Path):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binding", type=Path, required=True)
+    parser.add_argument("--handoff", type=Path, required=True)
     parser.add_argument("--document", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
     result = evaluate_source_binding_acceptance(
-        load(args.binding),
+        load(args.handoff),
         load(args.document),
         load(args.target),
     )
