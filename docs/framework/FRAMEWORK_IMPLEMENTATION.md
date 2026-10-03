@@ -181,3 +181,16 @@ It does not bind a document, create a plan, or mutate CAD by itself.
 HS tags are returned as a tag manifest. `xdata_write_supported=false` is
 explicit until native HS-STEEL XData persistence is implemented; tags must not
 be silently dropped.
+
+
+### HS-STEEL section catalog handoff
+
+`cad_hs_steel_catalog_prepare` consumes `hs-steel-section-catalog/1` as
+read-only planning data. It verifies the canonical contract digest and source
+SHA-256, requires a clean strict-parse status, rechecks row counts and physical
+values, and refuses any payload that claims the complete private legacy catalog
+is globally verified.
+
+The output remains non-authorizing and does not mutate CAD. It validates only
+the supplied family handoff; private `C:\\HS-STEEL` coverage remains a separate
+real-asset validation concern.
