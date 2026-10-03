@@ -47,6 +47,7 @@ builder.Services
     .WithTools<SnapshotTools>()
     .WithTools<PlanTools>()
     .WithTools<ReviewTools>()
+    .WithTools<NvidiaVisualTools>()
     .WithTools<HsSteelTools>();
 
 await builder.Build().RunAsync();
