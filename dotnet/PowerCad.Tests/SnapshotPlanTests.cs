@@ -41,6 +41,8 @@ public sealed class SnapshotPlanTests : IDisposable
         var tools = new SnapshotTools(gateway, store);
         var metadata = Obj(await tools.Extract(max_entities: 1));
         Assert.True(metadata["truncated"]!.GetValue<bool>());
+        Assert.True(metadata["scan_complete"]!.GetValue<bool>());
+        Assert.Equal("all_top_level_entities", metadata["counts_scope"]!.GetValue<string>());
         Assert.True(metadata["raw_count"]!.GetValue<int>() > 1);
         Assert.Equal(metadata["raw_count"]!.GetValue<int>(), metadata["processed_count"]!.GetValue<int>());
         Assert.Contains("paper_space", metadata["excluded_scopes"]!.AsArray().Select(n => n!.GetValue<string>()));
@@ -51,6 +53,42 @@ public sealed class SnapshotPlanTests : IDisposable
         Assert.Equal(before, tools.Page(id));
         Assert.NotEqual(metadata["content_hash"]!.GetValue<string>(), Obj(await tools.Extract(1))["content_hash"]!.GetValue<string>());
         Assert.False(Obj(before)["live_currentness_verified"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Snapshot_scan_limit_is_conservatively_partial_and_coverage_flows_to_review_and_plan()
+    {
+        var doc = new InMemoryCadDocument();
+        var dispatcher = new CommandDispatcher(doc);
+        dispatcher.Execute("create", JsonNode.Parse("""{"entities":[{"type":"line","start":[0,0],"end":[1,0]}]}""")!.AsObject());
+
+        var gateway = new SimulatorGateway(doc, false);
+        var snapshots = new SnapshotStore();
+        var tools = new SnapshotTools(gateway, snapshots);
+        var metadata = Obj(await tools.Extract(max_entities: 1000, max_scanned_entities: 1));
+
+        Assert.False(metadata["scan_complete"]!.GetValue<bool>());
+        Assert.Equal(1, metadata["raw_count"]!.GetValue<int>());
+        Assert.False(metadata["total_count_known"]!.GetValue<bool>());
+        Assert.Null(metadata["total_count"]);
+        Assert.Equal("entity_limit", metadata["scan_stop_reason"]!.GetValue<string>());
+        Assert.Equal("scanned_top_level_prefix", metadata["counts_scope"]!.GetValue<string>());
+        Assert.Equal("scanned_top_level_prefix_and_layers", metadata["content_hash_scope"]!.GetValue<string>());
+        Assert.True(metadata["truncated"]!.GetValue<bool>());
+
+        var snapshotId = metadata["snapshot_id"]!.GetValue<string>();
+        var review = Obj(new ReviewTools(snapshots).Review(snapshotId));
+        Assert.False(review["scan_complete"]!.GetValue<bool>());
+        Assert.Equal("scanned_top_level_prefix", review["counts_scope"]!.GetValue<string>());
+        Assert.True(review["input_truncated"]!.GetValue<bool>());
+
+        var plan = Obj(await new PlanTools(gateway, snapshots, new PlanStore(_root)).Create(
+            snapshotId,
+            Steps("""[{"command":"create","params":{"entities":[{"type":"circle","center":[0,0],"radius":1}]}}]"""),
+            "partial snapshot propagation"));
+        Assert.False(plan["snapshot_scan_complete"]!.GetValue<bool>());
+        Assert.Equal("scanned_top_level_prefix", plan["snapshot_counts_scope"]!.GetValue<string>());
+        Assert.Equal("scanned_top_level_prefix_and_layers", plan["snapshot_hash_scope"]!.GetValue<string>());
     }
 
     private async Task<(InMemoryCadDocument Doc, DocumentBoundGateway Gateway, SnapshotStore Snapshots, string Snapshot)> Setup()
