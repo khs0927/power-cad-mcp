@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
 
 from power_cad_mcp.source_binding_acceptance import (
     BLOCKED,
@@ -9,47 +11,53 @@ from power_cad_mcp.source_binding_acceptance import (
 )
 
 
-def binding():
-    return {
-        "schema": "aec-source-live-binding/1",
+SHA = "a" * 64
+RECEIPT = "b" * 64
+
+
+def digest(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def handoff():
+    payload = {
+        "schema": "aec-executor-handoff/1",
         "binding_state": "SOURCE_BOUND",
+        "review_status": "VERIFIED_FOR_REVIEW",
+        "document_id": "open-db-1",
+        "session_id": "session-1",
         "source_id": "source-1",
         "source_byte_revision_id": "bytes-1",
         "parser_revision_id": "parser-1",
-        "resolver": {
-            "resolver_id": "drive-cache-resolver/1",
-            "resolver_issuer": "sion-source-resolver",
-            "trust_domain": "khs0927/aec-source-cache",
-            "signature_key_id": "resolver-key-2026-10",
-            "receipt_signature_verified": True,
-            "cache_entry_id": "cache-A201",
-            "resolver_receipt_sha256": "e" * 64,
-            "immutable_cache": True,
-            "resolved_path": r"C:\PowerCad\cache\A-201.dwg",
-        },
-        "live_document": {
-            "session_id": "session-1",
-            "document_id": "open-db-1",
-            "native_path": r"C:\PowerCad\cache\A-201.dwg",
-            "state_digest": "state-123",
-            "modification_generation": "generation-42",
-            "document_dirty": False,
-            "units": "mm",
-        },
-        "live_object": {
+        "source_sha256": SHA,
+        "file_sha256": SHA,
+        "candidate_id": "door-1",
+        "native_path": r"C:\PowerCad\cache\A-201.dwg",
+        "state_digest": "state-123",
+        "modification_generation": "generation-42",
+        "units": "mm",
+        "resolver_receipt_sha256": RECEIPT,
+        "cache_entry_id": "cache-A201",
+        "object_locator": {
             "layout": "Model",
             "handle": "2F3",
             "instance_path": ["10A", "2F3"],
             "fingerprint": "fp-1",
         },
-        "review_guard": {
-            "status": "VERIFIED_FOR_REVIEW",
-            "reasons": [],
-            "may_execute_mutation": False,
-        },
-        "may_execute_mutation": False,
         "execution_authorized": False,
+        "may_execute_mutation": False,
+        "requires_executor_authorization": True,
     }
+    payload["handoff_digest"] = digest(payload)
+    return payload
 
 
 def document():
@@ -57,6 +65,7 @@ def document():
         "session_id": "session-1",
         "document_id": "open-db-1",
         "native_path": r"c:/powercad/cache/A-201.DWG",
+        "file_sha256": SHA,
         "state_digest": "state-123",
         "modification_generation": "generation-42",
         "document_dirty": False,
@@ -73,36 +82,83 @@ def target():
     }
 
 
-def evaluate(b=None, d=None, t=None):
-    return evaluate_source_binding_acceptance(b or binding(), d or document(), t or target())
+def evaluate(h=None, d=None, t=None):
+    return evaluate_source_binding_acceptance(h or handoff(), d or document(), t or target())
 
 
-def test_valid_fresh_observation_is_only_ready_for_transaction_revalidation():
+def test_valid_handoff_is_only_ready_for_transaction_revalidation():
     result = evaluate()
     assert result["status"] == READY
     assert result["reasons"] == []
     assert result["execution_authorized"] is False
     assert result["may_execute_mutation"] is False
     assert result["requires_transaction_revalidation"] is True
+    assert result["requires_single_writer"] is True
+    assert result["requires_execution_receipt"] is True
 
 
-def test_candidate_or_review_blocked_binding_is_rejected():
-    b = binding()
-    b["binding_state"] = "CANDIDATE"
-    assert "binding_not_source_bound" in evaluate(b=b)["reasons"]
+def test_handoff_must_be_source_bound_review_ready_and_non_authorizing():
+    h = handoff()
+    h["binding_state"] = "CANDIDATE"
+    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    assert "handoff_not_source_bound" in evaluate(h=h)["reasons"]
 
-    b = binding()
-    b["review_guard"]["status"] = "REQUIRES_REVIEW"
-    assert "binding_not_review_ready" in evaluate(b=b)["reasons"]
+    h = handoff()
+    h["review_status"] = "REQUIRES_REVIEW"
+    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    assert "handoff_not_review_ready" in evaluate(h=h)["reasons"]
+
+    h = handoff()
+    h["execution_authorized"] = True
+    h["may_execute_mutation"] = True
+    h["requires_executor_authorization"] = False
+    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert "handoff_must_not_pre_authorize_execution" in result["reasons"]
+    assert "handoff_must_be_read_only" in result["reasons"]
+    assert "handoff_must_require_executor_authorization" in result["reasons"]
 
 
-def test_document_switch_and_generation_change_are_rejected():
+def test_handoff_digest_tampering_is_rejected():
+    h = handoff()
+    h["state_digest"] = "tampered"
+    result = evaluate(h=h)
+    assert result["status"] == BLOCKED
+    assert "handoff_digest_invalid" in result["reasons"]
+
+
+def test_source_and_file_hashes_must_be_valid_and_equal():
+    h = handoff()
+    h["source_sha256"] = "c" * 64
+    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert result["status"] == BLOCKED
+    assert "handoff_source_file_hash_mismatch" in result["reasons"]
+
+    h = handoff()
+    h["file_sha256"] = "bad"
+    h["handoff_digest"] = digest({k: v for k, v in h.items() if k != "handoff_digest"})
+    result = evaluate(h=h)
+    assert "missing_or_invalid_handoff_file_sha256" in result["reasons"]
+
+
+def test_fresh_file_bytes_must_match_handoff():
+    d = document()
+    d["file_sha256"] = "c" * 64
+    result = evaluate(d=d)
+    assert result["status"] == BLOCKED
+    assert "fresh_document_mismatch:file_sha256" in result["reasons"]
+
+
+def test_document_switch_generation_and_state_change_are_rejected():
     d = document()
     d["document_id"] = "open-db-2"
+    d["state_digest"] = "state-124"
     d["modification_generation"] = "generation-43"
     result = evaluate(d=d)
     assert result["status"] == BLOCKED
     assert "fresh_document_mismatch:document_id" in result["reasons"]
+    assert "fresh_document_mismatch:state_digest" in result["reasons"]
     assert "fresh_document_mismatch:modification_generation" in result["reasons"]
 
 
@@ -144,41 +200,23 @@ def test_fingerprint_handle_layout_and_nested_instance_are_all_rechecked():
     assert "fresh_target_mismatch:instance_path" in result["reasons"]
 
 
-def test_unsigned_or_mutable_resolver_attestation_is_rejected():
-    b = binding()
-    b["resolver"]["receipt_signature_verified"] = False
-    b["resolver"]["immutable_cache"] = False
-    result = evaluate(b=b)
-    assert "resolver_signature_not_verified" in result["reasons"]
-    assert "resolver_cache_not_immutable" in result["reasons"]
-
-
-def test_missing_fresh_generation_or_target_fields_fail_closed():
+def test_missing_fresh_fields_fail_closed():
     d = document()
+    del d["file_sha256"]
     del d["state_digest"]
     del d["modification_generation"]
     t = target()
     del t["instance_path"]
     result = evaluate(d=d, t=t)
     assert result["status"] == BLOCKED
+    assert "missing_fresh_document_field:file_sha256" in result["reasons"]
     assert "missing_fresh_document_field:state_digest" in result["reasons"]
     assert "missing_fresh_document_field:modification_generation" in result["reasons"]
     assert "missing_fresh_target_field:instance_path" in result["reasons"]
 
 
-def test_binding_cannot_smuggle_pre_authorization():
-    b = binding()
-    b["execution_authorized"] = True
-    b["may_execute_mutation"] = True
-    result = evaluate(b=b)
-    assert result["status"] == BLOCKED
-    assert "binding_must_not_pre_authorize_execution" in result["reasons"]
-    assert "binding_must_be_read_only" in result["reasons"]
-    assert result["execution_authorized"] is False
-
-
 def test_input_objects_are_not_mutated():
-    b, d, t = binding(), document(), target()
-    before = deepcopy((b, d, t))
-    evaluate_source_binding_acceptance(b, d, t)
-    assert (b, d, t) == before
+    h, d, t = handoff(), document(), target()
+    before = deepcopy((h, d, t))
+    evaluate_source_binding_acceptance(h, d, t)
+    assert (h, d, t) == before
