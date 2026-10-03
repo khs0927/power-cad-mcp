@@ -11,6 +11,7 @@ Power CAD는 SOURCE_BOUND를 새로 만들지 않는다. Ontology가 source iden
 1. Ontology `aec-executor-handoff/1`
 2. Power CAD가 방금 다시 읽은 document identity
 3. Power CAD가 방금 다시 읽은 target identity
+4. executor-owned resolver trust policy
 
 ## handoff 검증
 
@@ -23,8 +24,10 @@ Power CAD는 SOURCE_BOUND를 새로 만들지 않는다. Ontology가 source iden
 - handoff_digest 재계산 일치
 - source_sha256 / resolved_sha256 / file_sha256 / resolver receipt SHA-256 형식 유효
 - source_sha256 = resolved_sha256 = handoff file_sha256
-- resolver_issuer / trust_domain / signature_key_id 존재
-- 이 trust metadata와 resolved SHA도 handoff_digest에 포함
+- resolver_id / resolver_issuer / trust_domain / signature_key_id 존재
+- receipt_signature_verified=true
+- immutable_cache=true
+- executor의 현재 trust policy에서 resolver_id + issuer + domain + key-id exact match
 
 handoff가 변조되면 digest mismatch로 차단한다.
 
@@ -77,9 +80,7 @@ fingerprint를 다시 읽고 승인 및 single-writer 조건을 확인해야 한
 
 INDETERMINATE는 자동 재실행하지 않는다.
 
-## 현재 master와 PR #13 / #15의 관계
-
-이 모듈은 현재 `main`에 독립적으로 들어가며 PR #13의 대규모 discovery/runtime 변경에 종속되지 않는다.
+## PR #13 / #15와의 관계
 
 PR #13의 locate/matched는 discovery다. 실행 authority가 아니다.
 
@@ -96,5 +97,33 @@ python scripts/verify_source_binding_acceptance.py \
   --handoff runtime/executor-handoff.json \
   --document runtime/fresh-document.json \
   --target runtime/fresh-target.json \
+  --trust-policy runtime/resolver-trust-policy.json \
   --out runtime/power-cad-source-acceptance.json
 ```
+
+
+## Resolver trust policy
+
+Power CAD는 Ontology가 신뢰 판정을 내렸다는 사실만 맹목적으로 사용하지 않는다.
+executor가 현재 허용하는 resolver identity를 별도 policy로 유지한다.
+
+예:
+
+    {
+      "schema": "power-cad-resolver-trust-policy/1",
+      "trusted_resolvers": [
+        {
+          "resolver_id": "drive-cache-resolver/1",
+          "resolver_issuer": "sion-source-resolver",
+          "trust_domain": "khs0927/aec-source-cache",
+          "signature_key_ids": ["resolver-key-2026-10"]
+        }
+      ]
+    }
+
+wildcard trust는 지원하지 않는다. policy가 없거나 issuer/domain/key가 현재 policy와 다르면
+동일한 source SHA·handle·fingerprint가 맞더라도 READY가 될 수 없다.
+
+이 policy는 실행 권한 자체가 아니다. source resolver attestation을 소비자가 신뢰할 수
+있는지 확인하는 입력일 뿐이며, 실제 mutation은 여전히 transaction-time revalidation,
+approval, single-writer 및 receipt 계약을 통과해야 한다.
