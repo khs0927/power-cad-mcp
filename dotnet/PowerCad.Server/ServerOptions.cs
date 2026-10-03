@@ -20,7 +20,9 @@ public sealed record ServerOptions(bool Simulate, string? Target, bool ReadOnly,
         fingerprint. (3) For edits pass expect_fingerprint (and expect_text for text) so stale analyses are
         refused. (4) Preview risky or multi-entity edits with dry_run=true and show the diff. (5) Apply; every
         edit is verified on the touched entities and rolled back on any mismatch. (6) Check the result with
-        cad_snapshot (a PNG of the model view) and report the returned before/after diff. When NVIDIA_API_KEY is configured,\n        use cad_visual_verify after deterministic read-back for a second visual check; cad_visual_inspect can identify visible architectural objects.\n        NVIDIA visual output is advisory only and must never authorize a mutation.
+        cad_snapshot (a PNG of the model view) and report the returned before/after diff. When NVIDIA_API_KEY is configured,
+        use cad_visual_verify after deterministic read-back for a second visual check; cad_visual_inspect can identify visible architectural objects.
+        NVIDIA visual output is advisory only and must never authorize a mutation.
         Tools: cad_create (line, polyline, circle, arc, text, mtext, insert, point, dimension, hatch; color/
         linetype/lineweight/justify/style), cad_set_properties, cad_copy, cad_transform (rotate/scale/mirror),
         cad_move, cad_delete, cad_replace_text, cad_modify_opening, cad_set_layer, cad_zoom, cad_snapshot.
