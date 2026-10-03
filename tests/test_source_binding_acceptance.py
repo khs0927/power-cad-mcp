@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
-from copy import deepcopy
 
 from power_cad_mcp.source_binding_acceptance import (
     BLOCKED,
@@ -217,6 +217,6 @@ def test_missing_fresh_fields_fail_closed():
 
 def test_input_objects_are_not_mutated():
     h, d, t = handoff(), document(), target()
-    before = deepcopy((h, d, t))
+    before = copy.deepcopy((h, d, t))
     evaluate_source_binding_acceptance(h, d, t)
     assert (h, d, t) == before
