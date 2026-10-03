@@ -16,6 +16,22 @@ public sealed class SnapshotPlanTests : IDisposable
     private static JsonObject Obj(string value) => JsonNode.Parse(value)!.AsObject();
     private static JsonElement Steps(string value) => JsonSerializer.Deserialize<JsonElement>(value);
 
+    private static JsonObject SourceBinding(string documentId) => new()
+    {
+        ["schema"] = "aec-executor-handoff/1",
+        ["binding_state"] = "SOURCE_BOUND",
+        ["review_status"] = "VERIFIED_FOR_REVIEW",
+        ["document_id"] = documentId,
+        ["source_id"] = new string('a', 64),
+        ["source_byte_revision_id"] = new string('b', 64),
+        ["parser_revision_id"] = new string('c', 64),
+        ["handoff_digest"] = new string('d', 64),
+        ["resolver_receipt_sha256"] = new string('e', 64),
+        ["execution_authorized"] = false,
+        ["may_execute_mutation"] = false,
+        ["requires_executor_authorization"] = true,
+    };
+
     [Fact]
     public async Task Snapshot_reports_truncation_and_pages_remain_frozen_after_live_edits()
     {
@@ -86,6 +102,58 @@ public sealed class SnapshotPlanTests : IDisposable
             Assert.Equal("Committed", Obj(await reopened.Execute(id, false))["state"]!.GetValue<string>());
             Assert.Equal(count + 1, doc.CommitCount);
         }
+    }
+
+    [Fact]
+    public async Task Source_bound_ontology_handoff_is_persisted_into_plan_and_receipt()
+    {
+        var doc = InMemoryCadDocument.CreateSample();
+        var gateway = new DocumentBoundGateway(new SimulatorGateway(doc, false));
+        var binding = SourceBinding(doc.DocumentId);
+        var bindResult = (await gateway.SendAsync(
+            "bind_document",
+            new JsonObject
+            {
+                ["document_id"] = doc.DocumentId,
+                ["source_binding"] = binding.DeepClone(),
+            },
+            default))!.AsObject();
+        Assert.Equal("SOURCE_BOUND", bindResult["source_binding"]!["binding_state"]!.GetValue<string>());
+
+        await using (gateway)
+        {
+            var snapshots = new SnapshotStore();
+            var snapshot = Obj(await new SnapshotTools(gateway, snapshots).Extract())["snapshot_id"]!.GetValue<string>();
+            var tools = new PlanTools(gateway, snapshots, new PlanStore(_root));
+            var plan = Obj(await tools.Create(
+                snapshot,
+                Steps("""[{"command":"create","params":{"entities":[{"type":"circle","center":[0,0],"radius":7}]}}]"""),
+                "source bound test"));
+            Assert.Equal(new string('d', 64), plan["source_binding"]!["handoff_digest"]!.GetValue<string>());
+
+            var id = plan["plan_id"]!.GetValue<string>();
+            await tools.Execute(id);
+            var committed = Obj(await tools.Execute(id, false));
+            Assert.Equal("Committed", committed["state"]!.GetValue<string>());
+            Assert.Equal(new string('d', 64), committed["result"]!["source_binding_handoff_digest"]!.GetValue<string>());
+            Assert.Equal(new string('a', 64), committed["result"]!["source_id"]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public async Task Source_binding_for_another_document_is_rejected()
+    {
+        var doc = InMemoryCadDocument.CreateSample();
+        await using var gateway = new DocumentBoundGateway(new SimulatorGateway(doc, false));
+        var error = await Assert.ThrowsAsync<CadException>(() => gateway.SendAsync(
+            "bind_document",
+            new JsonObject
+            {
+                ["document_id"] = doc.DocumentId,
+                ["source_binding"] = SourceBinding("other-document"),
+            },
+            default));
+        Assert.Equal(ErrorCodes.DocumentChanged, error.Code);
     }
 
     [Fact]
