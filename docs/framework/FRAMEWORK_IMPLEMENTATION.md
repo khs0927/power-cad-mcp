@@ -133,3 +133,16 @@ After publishing the server, `scripts/register_codex.ps1` registers that executa
 with Codex. `-Name power-cad-dev -Simulate` creates a separate simulator entry.
 The registration script does not install or reload the AutoCAD plugin.
 Reference: https://learn.chatgpt.com/docs/extend/mcp?surface=cli
+
+
+## Ontology source binding handoff
+
+`cad_bind_document` can optionally accept an `aec-executor-handoff/1` object produced by
+the Ontology drawing-context layer. Power CAD verifies that the handoff is
+`SOURCE_BOUND`, `VERIFIED_FOR_REVIEW`, explicitly non-authorizing, and bound to the same
+live `document_id`. The server stores this provenance with the client binding.
+
+Plans created while such a binding is active persist the source binding. Committed plan
+receipts echo `source_binding_handoff_digest`, `source_id`,
+`source_byte_revision_id`, and `parser_revision_id` so execution evidence can be joined
+back to Ontology without treating the Ontology handoff itself as mutation authorization.
