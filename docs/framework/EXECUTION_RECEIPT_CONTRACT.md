@@ -10,6 +10,7 @@ persisted plan/result를 **실행 근거(receipt)** 로 정규화하는 read-onl
 receipt는 최소 네 상태를 사용한다.
 
 - `COMMITTED`: plan state가 Committed이고, non-dry-run committed result가 존재하며,
+  result의 `executor=power-cad`, `plan_id`, `document_id`가 persisted plan과 정확히 일치하고,
   source binding이 있으면 result의 source identifiers가 handoff와 모두 일치한다.
 - `ROLLED_BACK`: 실패했지만 `rollback_verified=true`라는 명시적 근거가 있다.
 - `REJECTED`: `mutation_started=false`가 명시되어 실제 mutation이 시작되지 않았음이 증명된다.
@@ -17,6 +18,8 @@ receipt는 최소 네 상태를 사용한다.
   없거나, persisted state가 Executing/Indeterminate이거나, Committed result가 불완전한 경우다.
 
 단순히 plan state가 Failed라는 이유만으로 ROLLED_BACK으로 승격하지 않는다.
+`rollback_verified=true`와 `mutation_started=false`처럼 서로 모순되는 failure evidence도
+안전한 상태를 추측하지 않고 `INDETERMINATE`로 둔다.
 
 ## 재실행 정책
 
