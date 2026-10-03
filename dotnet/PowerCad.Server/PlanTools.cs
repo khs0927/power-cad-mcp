@@ -112,6 +112,9 @@ public sealed class PlanTools(ICadGateway gateway, SnapshotStore snapshots, Plan
             ["state"] = "Prepared",
             ["steps"] = rows,
         };
+        if (gateway is DocumentBoundGateway boundGateway
+            && boundGateway.SourceBindingSnapshot() is { } sourceBinding)
+            plan["source_binding"] = sourceBinding;
         if (plan.ToJsonString().Length > 200_000) throw new McpException("[INVALID_PLAN] Plan is too large.");
         await plans.Gate.WaitAsync(ct).ConfigureAwait(false);
         try { plans.Write(plan); }
@@ -152,6 +155,13 @@ public sealed class PlanTools(ICadGateway gateway, SnapshotStore snapshots, Plan
                 if (result is not JsonObject receipt || receipt["committed"]?.GetValue<bool>() != !dry_run
                     || receipt["dry_run"]?.GetValue<bool>() != dry_run)
                     throw new CadException(ErrorCodes.Internal, "The execution result did not contain a verifiable commit receipt.");
+                if (plan["source_binding"] is JsonObject sourceBinding)
+                {
+                    receipt["source_binding_handoff_digest"] = sourceBinding["handoff_digest"]?.DeepClone();
+                    receipt["source_id"] = sourceBinding["source_id"]?.DeepClone();
+                    receipt["source_byte_revision_id"] = sourceBinding["source_byte_revision_id"]?.DeepClone();
+                    receipt["parser_revision_id"] = sourceBinding["parser_revision_id"]?.DeepClone();
+                }
                 plan["state"] = dry_run ? "Previewed" : "Committed";
                 plan[dry_run ? "preview" : "result"] = result?.DeepClone();
                 plan["updated_at"] = DateTimeOffset.UtcNow.ToString("O");
