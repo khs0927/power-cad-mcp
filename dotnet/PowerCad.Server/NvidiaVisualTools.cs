@@ -128,7 +128,7 @@ public sealed class NvidiaCosmosReasoner(
         return "";
     }
 
-    internal static JsonObject ParseFinalJson(string text)
+    public static JsonObject ParseFinalJson(string text)
     {
         // Cosmos Reason models can emit <think> traces. They are deliberately discarded:
         // Power CAD persists only the final structured evidence.
